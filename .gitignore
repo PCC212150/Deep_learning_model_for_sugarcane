@@ -1,0 +1,25 @@
+# ===== 模型权重 =====
+# 每个 119MB，超过 GitHub 单文件 100MB 硬限制，无法入库。
+# 分发方式：网盘 / 服务器 / GitHub Release 附件。
+*.pth
+
+# ===== 数据集（457MB）=====
+datasets/
+
+# ===== 推理输出（33GB）=====
+result/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ===== 编辑器 / 本地工具配置 =====
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

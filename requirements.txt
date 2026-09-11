@@ -1,0 +1,9 @@
+# 运行环境：Anaconda 虚拟环境 pcc（Python 3.12，已安装以下包，无需重复安装）
+#   conda activate pcc   （python = C:\Users\21215\.conda\envs\pcc\python.exe）
+# torch 2.12.1+cu130 / torchvision / numpy / pillow / scikit-image 均已就绪
+# 若迁移到新机器，执行：pip install torch torchvision numpy pillow scikit-image
+torch
+torchvision
+numpy
+pillow
+scikit-image

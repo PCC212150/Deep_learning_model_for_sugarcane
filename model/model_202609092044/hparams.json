@@ -1,0 +1,38 @@
+{
+  "size": 1536,
+  "batch": 4,
+  "epochs": 5000,
+  "lr": 0.001,
+  "patience": 60,
+  "val_size": 2,
+  "seed": 42,
+  "data_dir": "/home/yejin/project-PCC/Deep_learning_model_for_sugarcane/datasets/train",
+  "out_dir": "/home/yejin/project-PCC/Deep_learning_model_for_sugarcane/model",
+  "no_amp": false,
+  "cpu": false,
+  "device": "cuda",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "val_names": [
+    "plant_ S062-3",
+    "plant_ S068-2"
+  ],
+  "train_names": [
+    "plant_ S068-3",
+    "plant_ S068-4",
+    "plant_ S127-1",
+    "plant_ S127-2",
+    "plant_ S127-3",
+    "plant_ S221-1",
+    "plant_ S221-2",
+    "plant_ S221-3",
+    "plant_ S221-4",
+    "plant_S001-1",
+    "plant_S001-3",
+    "plant_S001-4",
+    "plant_S002-1",
+    "plant_S002-2"
+  ],
+  "params_M": 31.04,
+  "start": "2026-09-09 20:44:50",
+  "model_name": "model_202609092044"
+}
