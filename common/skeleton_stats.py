@@ -16,6 +16,10 @@
 
 说明：无先验的近似拆分（相切/粘连时走向可能误配），误差在 test.py 汇总对比
 中体现；阈值参数化便于调优。
+
+实现上分成两段，便于参数扫描时复用：[掩码 -> 骨架 -> 邻接表]（_skeleton_adj，
+与阈值无关，一张图只算一次）与 [邻接表 -> 剪枝 -> 分链]（_strands_from_adj，
+每组阈值算一次，内部拷贝邻接表、不改入参）。
 """
 import numpy as np
 from PIL import Image
@@ -110,10 +114,14 @@ def _merge_junctions(nodes, adj):
     return {p: find(p) for p in nodes}
 
 
-def _strands_of_component(comp_nodes, adj, spur_s, min_len):
+def _strands_of_component(comp_nodes, adj, spur_s, min_len, normalize=True):
     """对一个连通块拆根。
 
     返回 [[长度(像素), 像素轨迹[(y,x), ...]], ...]；轨迹首点是一个根端。
+
+    normalize=True 时执行末尾的「计数归一」（把过碎的短轨迹按端点最近拼接回现有轨迹）；
+    False 时原样返回全部轨迹。侧根只有 1 个自由端，而归一按 ceil(叶端数/2) 限数，
+    会把侧根并掉近一半，所以需要评估侧根时必须能关掉它（参数扫描里的一个维度）。
     """
     # ---- 全部为度2节点 -> 纯环，整块 1 条根 ----
     if all(len(adj[p]) == 2 for p in comp_nodes):
@@ -204,16 +212,20 @@ def _strands_of_component(comp_nodes, adj, spur_s, min_len):
 
     # ---- 沿配对串轨迹 ----
     seen_arms = set()
-    results = []  # [[长度, 像素轨迹], ...]
+    results = []  # [[长度, 像素轨迹, 端点元信息], ...]
+
+    def _node_kind(node):
+        """节点类型：叶端(1 条臂) / 分叉点(其余)。判断侧根要用它。"""
+        return "leaf" if len(arms.get(node, ())) == 1 else "junction"
 
     def traverse(start_node, start_k):
-        """从某臂起步串一条轨迹，返回 (长度, 像素轨迹)；遇到已消费臂返回 None。"""
+        """从某臂起步串一条轨迹，返回 (长度, 像素轨迹, 终点, 终点类型)；遇到已消费臂返回 None。"""
         length = 0.0
         px = []
         node, k = start_node, start_k
         while True:
             if (node, k) in seen_arms:
-                return (length, px) if length > 0 else None
+                return (length, px, node, _node_kind(node)) if length > 0 else None
             if node not in arms or k >= len(arms[node]):
                 return None
             seen_arms.add((node, k))
@@ -228,51 +240,55 @@ def _strands_of_component(comp_nodes, adj, spur_s, min_len):
                     k2 = i2
                     break
             if k2 is None:
-                return length, px
+                return length, px, n2, _node_kind(n2)
             juse = paired.get(n2)
             if juse and k2 in juse:
                 seen_arms.add((n2, k2))  # 到达侧臂已消费
                 node, k = n2, juse[k2]
                 continue
             seen_arms.add((n2, k2))
-            return length, px
+            return length, px, n2, _node_kind(n2)
 
-    starts = []
+    starts = []   # [(节点, 臂序号, 起点类型), ...]
     for p, parms in arms.items():
         if len(parms) == 1:
-            starts.append((p, 0))  # 叶端
+            starts.append((p, 0, "leaf"))  # 叶端
     for p, parms in arms.items():
         if len(parms) >= 3:
             juse = paired.get(p, {})
             for k in range(len(parms)):
                 if k not in juse:
-                    starts.append((p, k))  # 未配对的起点臂
-    started_set = set(starts)
-    for s in starts:
-        r = traverse(*s)
+                    starts.append((p, k, "junction"))  # 未配对的起点臂
+    started_set = {(p, k) for p, k, _ in starts}
+    for (p, k, kind) in starts:
+        r = traverse(p, k)
         if r is not None and r[0] >= min_len:
-            results.append([r[0], r[1]])
+            results.append([r[0], r[1], {"start_kind": kind, "start_node": p,
+                                         "end_kind": r[3], "end_node": r[2]}])
     # 兜底：剩余未消费臂（环等）也串起来，避免丢长度
     for p, parms in arms.items():
         for k in range(len(parms)):
             if (p, k) not in seen_arms and (p, k) not in started_set:
                 r = traverse(p, k)
                 if r is not None and r[0] >= min_len:
-                    results.append([r[0], r[1]])
+                    results.append([r[0], r[1], {"start_kind": "loop", "start_node": p,
+                                                 "end_kind": r[3], "end_node": r[2]}])
 
+    results.sort(key=lambda t: t[0], reverse=True)
     # 计数归一：本块根数 = ceil(叶端数/2)（每根两端在图上分开、互不粘连时严格成立，
     # GT 统计验证 23 根 -> 23)。轨迹多于该值时，把最短轨迹按"端点最近"原则
     # 拼接回现有轨迹（既保住总长，又让每条折线几何上连续完整）。
+    # 副作用：侧根只有 1 个自由端，这一步会把侧根并掉，故须能通过 normalize=False 关掉。
     n_leaves = sum(1 for p, v in arms.items() if len(v) == 1)
-    results.sort(key=lambda t: t[0], reverse=True)
-    if n_leaves >= 2:
+    if normalize and n_leaves >= 2:
         k = (n_leaves + 1) // 2
         while len(results) > k:
             piece = results.pop()  # 最短的一条
             ppts = piece[1]
             p_ends = (ppts[0], ppts[-1])
             best = None
-            for idx, (_, pts) in enumerate(results):
+            for idx, r in enumerate(results):
+                pts = r[1]
                 for end_i in (0, 1):
                     for piece_end in (0, 1):
                         e1, e2 = pts[0 if end_i == 0 else -1], p_ends[piece_end]
@@ -280,13 +296,26 @@ def _strands_of_component(comp_nodes, adj, spur_s, min_len):
                         if best is None or d < best[0]:
                             best = (d, idx, end_i, piece_end)
             _, idx, end_i, piece_end = best
-            L, pts = results[idx]
-            if end_i == 1:  # 接到 pts 尾部
+            L, pts, meta = results[idx]
+            pL, ppts, pmeta = piece
+            if end_i == 1:  # 接到 pts 尾部：S 起点保留，终点取 piece 没被拼上的那一端
                 seg = ppts if piece_end == 0 else ppts[::-1]
-                results[idx] = [L + piece[0], pts + seg]
-            else:           # 接到 pts 头部
+                tail = pmeta["end_kind"], pmeta["end_node"]
+                if piece_end == 1:
+                    tail = pmeta["start_kind"], pmeta["start_node"]
+                results[idx] = [L + pL, pts + seg,
+                                {"start_kind": meta["start_kind"],
+                                 "start_node": meta["start_node"],
+                                 "end_kind": tail[0], "end_node": tail[1]}]
+            else:           # 接到 pts 头部：S 终点保留，起点取 piece 没被拼上的那一端
                 seg = ppts if piece_end == 1 else ppts[::-1]
-                results[idx] = [L + piece[0], seg + pts]
+                head = pmeta["end_kind"], pmeta["end_node"]
+                if piece_end == 1:
+                    head = pmeta["start_kind"], pmeta["start_node"]
+                results[idx] = [L + pL, seg + pts,
+                                {"start_kind": head[0], "start_node": head[1],
+                                 "end_kind": meta["end_kind"],
+                                 "end_node": meta["end_node"]}]
         results.sort(key=lambda t: t[0], reverse=True)
     return results
 
@@ -308,29 +337,26 @@ def _decimate(pts, spacing):
     return [(int(x), int(y)) for (x, y) in line]
 
 
-def analyze_mask_ex(mask: np.ndarray, spur: float = 30.0, min_len: float = 20.0,
-                    erode_iters: int = 1, with_paths: bool = False,
-                    spacing: float = 50.0) -> dict:
-    """mask: (h, w) bool 原图分辨率二值掩码。
+def _skeleton_adj(mask: np.ndarray, erode_iters: int = 1):
+    """掩码 -> 轻度腐蚀 -> 骨架化 -> 带权 8 邻域邻接表（均在原图分辨率）。
 
-    返回 {"count", "lengths"(降序), "total"}；with_paths=True 时附加
-    "paths": [[(x, y), ...], ...]（与 lengths 一一对应、同序的抽稀折线）。
+    返回 {像素(y, x): {邻居: 步长}}；掩码为空 / 腐蚀后为空 / 无骨架像素时返回 None。
+    只做「掩码 -> 图」这一步，与 spur/min_len 无关，所以参数扫描时同一张图可以只算一次、
+    多组阈值复用（_strands_from_adj 自己会拷贝，不会改到这里）。
     """
-    empty = {"count": 0, "lengths": [], "total": 0.0}
     if mask is None or mask.ndim != 2 or not mask.any():
-        return {**empty, "paths": []} if with_paths else empty
-
+        return None
     m = mask
     for _ in range(erode_iters):  # 消除线宽厚度伪影
         m = erosion(m, footprint=disk(1))
     if not m.any():
-        return {**empty, "paths": []} if with_paths else empty
+        return None
 
     skel = skeletonize(m)
     ys, xs = np.nonzero(skel)
     pts = {(int(y), int(x)) for y, x in zip(ys.tolist(), xs.tolist())}
     if not pts:
-        return {**empty, "paths": []} if with_paths else empty
+        return None
 
     # 带权 8 邻域邻接表
     adj = {p: {} for p in pts}
@@ -344,37 +370,69 @@ def analyze_mask_ex(mask: np.ndarray, spur: float = 30.0, min_len: float = 20.0,
                     w = _step_len((y, x), q)
                     adj[(y, x)][q] = w
                     adj[q][(y, x)] = w
+    return adj
 
-    _prune(adj, spur)
-    if not adj:
+
+def _strands_from_adj(adj, spur: float = 30.0, min_len: float = 20.0,
+                      normalize: bool = True) -> list:
+    """邻接表 -> 剪枝 -> 分链，返回 [[长度(像素), 像素轨迹[(y,x), ...]], ...]（长度降序）。
+
+    输入 adj 不会被修改（先拷贝再剪枝），便于参数扫描复用同一张图的骨架。
+    """
+    work = {p: dict(nb) for p, nb in adj.items()}
+    _prune(work, spur)
+    if not work:
+        return []
+    entries = []
+    for comp in _components(work):
+        entries.extend(_strands_of_component(comp, work, spur, min_len, normalize))
+    entries.sort(key=lambda t: t[0], reverse=True)
+    return entries
+
+
+def analyze_mask_ex(mask: np.ndarray, spur: float = 30.0, min_len: float = 20.0,
+                    erode_iters: int = 1, with_paths: bool = False,
+                    spacing: float = 50.0, normalize_count: bool = True) -> dict:
+    """mask: (h, w) bool 原图分辨率二值掩码。
+
+    返回 {"count", "lengths"(降序), "total"}；with_paths=True 时附加
+    "paths": [[(x, y), ...], ...]（与 lengths 一一对应、同序的抽稀折线）。
+    normalize_count=False 关闭「计数归一」（见 _strands_of_component），
+    用于评估侧根数（默认为 True，与历史结果一致）。
+    """
+    empty = {"count": 0, "lengths": [], "total": 0.0}
+    adj = _skeleton_adj(mask, erode_iters)
+    if adj is None:
         return {**empty, "paths": []} if with_paths else empty
 
-    entries = []
-    for comp in _components(adj):
-        entries.extend(_strands_of_component(comp, adj, spur, min_len))
+    entries = _strands_from_adj(adj, spur, min_len, normalize_count)
     if not entries:
         return {**empty, "paths": []} if with_paths else empty
-    entries.sort(key=lambda t: t[0], reverse=True)
     lengths = [t[0] for t in entries]
     out = {"count": len(lengths), "lengths": lengths,
            "total": float(sum(lengths))}
     if with_paths:
         out["paths"] = [_decimate(t[1], spacing) for t in entries]
+        # 每条折线的端点类型（叶端 / 分叉点）：侧根 = 起点在分叉点、终点在叶端且不长的折线
+        out["strand_meta"] = [t[2] for t in entries]
     return out
 
 
 def analyze_mask(mask: np.ndarray, spur: float = 30.0, min_len: float = 20.0,
-                 erode_iters: int = 1) -> dict:
+                 erode_iters: int = 1, normalize_count: bool = True) -> dict:
     """兼容入口：只要统计量（count / lengths / total）。"""
-    return analyze_mask_ex(mask, spur, min_len, erode_iters, with_paths=False)
+    return analyze_mask_ex(mask, spur, min_len, erode_iters, with_paths=False,
+                           normalize_count=normalize_count)
 
 
 def extract_root_paths(mask: np.ndarray, spur: float = 30.0, min_len: float = 20.0,
-                       erode_iters: int = 1, spacing: float = 50.0):
+                       erode_iters: int = 1, spacing: float = 50.0,
+                       normalize_count: bool = True):
     """返回逐根折线 [[(x, y), ...], ...]（按长度降序，与 analyze_mask 的长度一一对应）。
 
     spacing: 折线点抽稀间距(px)，默认 50，与标注 RSML 的
     controlpointseparation="50" 一致。可直接喂给 common.rsml_export.write_rsml。
     """
     return analyze_mask_ex(mask, spur, min_len, erode_iters,
-                           with_paths=True, spacing=spacing)["paths"]
+                           with_paths=True, spacing=spacing,
+                           normalize_count=normalize_count)["paths"]

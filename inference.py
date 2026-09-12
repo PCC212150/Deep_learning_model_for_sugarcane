@@ -6,12 +6,15 @@
     python inference.py --dir D:\\...\\某图片文件夹                    # 模型省略=最新
 
 结果：result/{目标文件夹名}/
-    - {目标文件夹名}.txt    每行四列（空格分隔）：
+    - {目标文件夹名}.txt    每行前四列（空格分隔，与旧版一致，末尾追加四列）：
                            图片名  根数量  各根系长度(逗号分隔,1位小数)  总根系长度(px)
+                           主根数  侧根数  主根总长(px)  侧根总长(px)
     - {图片名}_mask.png     每张图的预测二值掩码（黑底白根）
     - {图片名}_overlay.png  每张图的原图 + 预测区域红色半透明叠加（便于目视检查）
     - {图片名}.rsml         每张图的预测根系折线，与标注同格式（可用 RootNav/
-                           rsml-visualizer 打开；每条根 = 一个 plant 下的 primary 根）
+                           rsml-visualizer 打开）：每条主根一个 plant，长在它上面的侧根
+                           嵌套成 secondary（ID 形如 1.1 / 1.1.1），与标注口径一致
+加 --flat 则 RSML 退回旧格式（每条折线一个 plant、全部 primary）。
 目录/文件重名时自动追加 -1、-2 …（项目规范）。
 """
 import sys
@@ -27,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import config  # noqa: E402
 from common import image_io, naming, predict  # noqa: E402
+from common.root_hierarchy import hierarchy_summary, infer_hierarchy  # noqa: E402
 from common.rsml_export import write_rsml  # noqa: E402
 from common.skeleton_stats import analyze_mask_ex  # noqa: E402
 from common.unet import UNet  # noqa: E402
@@ -47,17 +51,22 @@ def resolve_model_dir(model_arg) -> Path:
     if not dirs:
         print(f"[错误] model 目录下没有模型，请先运行 train/train.py")
         sys.exit(1)
-    return max(dirs, key=lambda p: p.stat().st_mtime)
+    # 按文件夹名取最新（model_YYYYMMDDHHMM 有序）；mtime 会被写进目录的测试结果文件改掉
+    return max(dirs, key=lambda p: p.name)
 
 
 def parse_argv():
     """解析参数，兼容 readme 的 --model_xxx 与裸参数写法。"""
     model, folder = None, None
+    flat = False
     tokens = sys.argv[1:]
     i = 0
     while i < len(tokens):
         t = tokens[i]
-        if t == "--model":
+        if t == "--flat":                       # RSML 退回旧扁平格式
+            flat = True
+            i += 1
+        elif t == "--model":
             model = tokens[i + 1] if i + 1 < len(tokens) else None
             i += 2
         elif t in ("--dir", "--image_dir", "--images", "--folder", "--path"):
@@ -82,7 +91,7 @@ def parse_argv():
                 print(f"[错误] 无法识别的参数: {t}")
                 sys.exit(1)
             i += 1
-    return model, folder
+    return model, folder, flat
 
 
 def make_overlay(img: np.ndarray, mask: np.ndarray, alpha: float = 0.45,
@@ -96,7 +105,7 @@ def make_overlay(img: np.ndarray, mask: np.ndarray, alpha: float = 0.45,
 
 
 def main():
-    model_arg, folder_arg = parse_argv()
+    model_arg, folder_arg, flat = parse_argv()
     if not folder_arg:
         print(__doc__)
         sys.exit(1)
@@ -143,9 +152,14 @@ def main():
                                   low_thresh=config.PRED_LOW_THRESHOLD)
             st = analyze_mask_ex(res["mask_orig"], spur=config.PRED_SPUR_LENGTH,
                                  min_len=config.MIN_ROOT_LENGTH, with_paths=True)
+            # 折线级几何判父子：某个端点长在别的折线上 = 侧根（口径见 common/root_hierarchy.py）
+            hier = infer_hierarchy(st["paths"])
+            hi = hierarchy_summary(st["paths"], hier)
             count, lens, total = st["count"], st["lengths"], st["total"]
             len_str = ",".join(f"{v:.1f}" for v in lens) if lens else "-"
-            row = f"{p.name} {count} {len_str} {total:.1f}"
+            row = (f"{p.name} {count} {len_str} {total:.1f} "
+                   f"{hi['primary_count']} {hi['secondary_count']} "
+                   f"{hi['primary_length']:.1f} {hi['secondary_length']:.1f}")
             f.write(row + "\n")
 
             # ---- 保存处理过程中的图片：预测掩码 + 原图叠加可视化 ----
@@ -156,11 +170,13 @@ def main():
             overlay_path = out_dir / f"{p.stem}_overlay.png"
             Image.fromarray(make_overlay(img, res["mask_orig"])).save(overlay_path)
 
-            # ---- 导出 RSML（与标注同格式的预测根系折线） ----
+            # ---- 导出 RSML（与标注同格式：主根 + 挂在它上面的侧根） ----
             rsml_path = write_rsml(out_dir / f"{p.stem}.rsml", file_key=p.stem,
-                                   polylines=st["paths"])
+                                   polylines=st["paths"],
+                                   hierarchy=None if flat else hier)
 
-            print(f"[{k}/{len(imgs)}] {p.name}: 根数 {count} | "
+            print(f"[{k}/{len(imgs)}] {p.name}: 根数 {count} "
+                  f"(主 {hi['primary_count']} / 侧 {hi['secondary_count']}) | "
                   f"总长 {total:.1f} px | 各根长 {len_str}")
             print(f"    已保存: {mask_path.name} | {overlay_path.name} | "
                   f"{rsml_path.name}")
