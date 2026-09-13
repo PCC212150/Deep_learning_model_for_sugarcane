@@ -117,7 +117,9 @@ def _merge_junctions(nodes, adj):
 def _strands_of_component(comp_nodes, adj, spur_s, min_len, normalize=True):
     """对一个连通块拆根。
 
-    返回 [[长度(像素), 像素轨迹[(y,x), ...]], ...]；轨迹首点是一个根端。
+    返回 [[长度(像素), 像素轨迹[(y,x), ...], 端点元信息], ...]；轨迹首点是一个根端。
+    元信息与 analyze_mask_ex 的 strand_meta 同构：长度 < 2 的条目会让上层取 t[2] 越界，
+    所以每条分支都必须带元信息（纯环分支的元信息两个端点都是 "loop"）。
 
     normalize=True 时执行末尾的「计数归一」（把过碎的短轨迹按端点最近拼接回现有轨迹）；
     False 时原样返回全部轨迹。侧根只有 1 个自由端，而归一按 ceil(叶端数/2) 限数，
@@ -136,7 +138,9 @@ def _strands_of_component(comp_nodes, adj, spur_s, min_len, normalize=True):
             nxt = a if a != prev else b
             prev, cur = cur, nxt
         total += adj[prev][cur]
-        return [[total, px]] if total >= min_len else []
+        meta = {"start_kind": "loop", "start_node": p0,
+                "end_kind": "loop", "end_node": p0}
+        return [[total, px, meta]] if total >= min_len else []
 
     # ---- 链收缩：节点 = 叶端/分叉点；边 = 带像素序列的链 ----
     node_set = {p for p in comp_nodes if len(adj[p]) != 2}
