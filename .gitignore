@@ -4,7 +4,7 @@
 *.pth
 
 # ===== 数据集 =====
-datasets/
+datasets/*
 
 # ===== 实验报告 =====
 experimental_report/
