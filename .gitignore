@@ -11,6 +11,10 @@ experimental_report/
 
 # ===== 模型 =====
 model/
+
+# ===== 图片 =====
+pictures/   
+
 # ===== 推理输出 =====
 result/
 
