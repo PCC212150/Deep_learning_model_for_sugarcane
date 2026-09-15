@@ -19,7 +19,7 @@
 结果：result/{目标文件夹名}/
     - {目标文件夹名}.csv    每行一张图（UTF-8 BOM，Excel 直接双击可开）：
                             图片名 根数量 起点锚定(条) 总根长(px) 平均根长(px) 最长根(px)
-                            各根长度(px) 茎面积(px²) 检查区面积(px²) check_ok
+                            各根长度(px) 茎面积(px²) 检查区面积(px²) check_ok root_ok
                             「各根长度」用分号分隔；--mm-per-px>0 时行尾追加 mm 列；
                             文件末尾是若干以 # 开头的汇总行（Excel 可见，脚本可跳过）
     - {图片名}_overlay.png  原图 + 根系(红) + 茎(橙) + 检查范围(绿框)
@@ -158,7 +158,8 @@ def main():
     mm = mm_per_px if mm_per_px and mm_per_px > 0 else 0.0
 
     header = ["图片名", "根数量", "起点锚定(条)", "总根长(px)", "平均根长(px)",
-              "最长根(px)", "各根长度(px)", "茎面积(px²)", "检查区面积(px²)", "check_ok"]
+              "最长根(px)", "各根长度(px)", "茎面积(px²)", "检查区面积(px²)", "check_ok",
+              "root_ok"]
     if mm:
         header += ["总根长(mm)", "平均根长(mm)", "最长根(mm)"]
 
@@ -188,7 +189,8 @@ def main():
             row = [p.name, count, st["anchored_count"], f"{total:.1f}",
                    f"{total / count:.1f}" if count else "0.0",
                    f"{max(lens):.1f}" if lens else "0.0", len_str,
-                   stem_area, check_area, "是" if res["check_ok"] else "否"]
+                   stem_area, check_area, "是" if res["check_ok"] else "否",
+                   "是" if res.get("root_ok", True) else "否"]
             if mm:
                 row += [f"{total * mm:.1f}",
                         f"{total / count * mm:.1f}" if count else "0.0",

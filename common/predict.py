@@ -170,10 +170,29 @@ def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
     else:
         mask_counted = image_io.prob_to_orig_mask(prob_root_t, w0, h0,
                                                  threshold=0.5, channel=0)
+    root_ok = True
     if check_ok:                       # 精确求交（上采样后边界有一圈渐变带）
         exact = np.zeros((h0, w0), dtype=bool)
         exact[check_box[1]:check_box[3], check_box[0]:check_box[2]] = True
         mask_counted &= exact
+        # ---- 兜底：滞回低阈值是否把整片检查区淹了 ----
+        # 低阈值的前提是「背景概率接近 0」，但这个前提没人校验过。实测某模型背景概率
+        # 中位数涨到 0.125（低阈值是 0.10），检查框内 86% 被判成根、整张图糊成一片。
+        # 健康模型的这个比例只有 0.96%~5.50%（7 张测试图实测），所以超阈值一定是异常，
+        # 退回只用高阈值 0.5 重算。宁可少统计，也不要给出一片假根。
+        roi_area = float((check_box[2] - check_box[0]) * (check_box[3] - check_box[1]))
+        if roi_area > 0:
+            cov = float(mask_counted[check_box[1]:check_box[3],
+                                     check_box[0]:check_box[2]].sum()) / roi_area
+            if cov > config.PRED_MAX_ROOT_RATIO:
+                print(f"[警告] 滞回低阈值({low_thresh})把检查区淹没了：根占检查框 "
+                      f"{cov:.1%}（上限 {config.PRED_MAX_ROOT_RATIO:.0%}），"
+                      f"退回只用高阈值 0.5 重算。通常是模型的背景概率有底噪"
+                      f"（训练不充分或域不匹配），换个模型比调阈值管用。")
+                mask_counted = image_io.prob_to_orig_mask(
+                    prob_root_t, w0, h0, threshold=0.5, channel=0)
+                mask_counted &= exact
+                root_ok = False
 
     # ---- 其余通道：普通 0.5 阈值（茎/检查范围是块状目标，不需要滞回） ----
     masks = [mask_counted]
@@ -187,6 +206,7 @@ def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
         "mask_counted": mask_counted,
         "check_box": check_box,
         "check_ok": check_ok,
+        "root_ok": root_ok,        # False = 滞回被背景底噪淹没，已退回高阈值 0.5
         "target_size": (w1, h1),
         # ---- 兼容旧调用 ----
         "prob_target": root_p,                      # (h1, w1) float32，已清 ROI 之外

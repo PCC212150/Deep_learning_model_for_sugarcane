@@ -11,6 +11,10 @@
 
 数据划分**按植株整组进出**（同一植株的不同时点不会分处训练/验证两侧），
 `--val-size` 是验证集**植株数**。
+
+服务器上运行：
+CUDA_VISIBLE_DEVICES=0 python train.py --size  --batch  --workers 
+-1 则为cpu
 """
 import argparse
 import json
@@ -90,7 +94,11 @@ def cldice_loss(prob, target, iters, chans):
         sk_p, sk_t = soft_skel(p, iters), soft_skel(t, iters)
         sp = sk_p.sum(dim=(1, 2, 3))
         st = sk_t.sum(dim=(1, 2, 3))
-        tprec = ((sk_p * t).sum(dim=(1, 2, 3)) + eps) / (sp + eps)
+        # 预测骨架为空时必须显式置 0：否则 (0+eps)/(0+eps)=1 —— 一个"什么都没预测出骨架"
+        # 的平摊概率图会白拿满分，等于奖励模型把背景概率整体抬高。
+        tprec = torch.where(sp > 0.5,
+                            (sk_p * t).sum(dim=(1, 2, 3)) / sp.clamp(min=eps),
+                            torch.zeros_like(sp))
         tsens = ((sk_t * p).sum(dim=(1, 2, 3)) + eps) / (st + eps)
         denom = tprec + tsens
         cl = 2.0 * tprec * tsens / denom.clamp(min=eps)
