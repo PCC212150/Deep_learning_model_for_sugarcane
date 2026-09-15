@@ -13,7 +13,7 @@ experimental_report/
 model/
 
 # ===== 图片 =====
-pictures/   
+inference_pictures/   
 
 # ===== 推理输出 =====
 result/

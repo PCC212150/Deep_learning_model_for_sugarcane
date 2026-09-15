@@ -1,4 +1,4 @@
-"""经典 U-Net（含 BatchNorm）。
+"""经典 U-Net（归一化可选 BatchNorm / GroupNorm，见 make_norm）。
 
 编码器 4 层(64→128→256→512) + 瓶颈(1024)，解码器对称；每层 DoubleConv。
 输入输出长宽需为 16 的倍数（common.image_io.target_size 保证）；
@@ -8,15 +8,30 @@ import torch
 import torch.nn as nn
 
 
+def make_norm(kind: str, ch: int) -> nn.Module:
+    """按需生成归一化层。
+
+    batch: BatchNorm2d —— 需要 batch≥2 才有意义；batch=1 时每步只用单张图的统计量，
+           训练用的统计量与推理用的滑动平均对不上（实测 batch=1 训出的模型在 eval 模式下
+           只出 0.36% 前景、train 模式出 1.27%，**欠分割 3.5 倍**）。
+    group: GroupNorm —— 不依赖 batch 统计量，train/eval 行为一致，小 batch 下稳定。
+    """
+    if kind == "group":
+        return nn.GroupNorm(num_groups=min(8, ch), num_channels=ch)
+    if kind == "batch":
+        return nn.BatchNorm2d(ch)
+    raise ValueError(f"未知的归一化类型: {kind!r}（可选 batch / group）")
+
+
 class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, mid_ch=None):
+    def __init__(self, in_ch, out_ch, mid_ch=None, norm: str = "batch"):
         super().__init__()
         mid_ch = mid_ch or out_ch
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, mid_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(mid_ch), nn.ReLU(inplace=True),
+            make_norm(norm, mid_ch), nn.ReLU(inplace=True),
             nn.Conv2d(mid_ch, out_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch), nn.ReLU(inplace=True),
+            make_norm(norm, out_ch), nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
@@ -26,9 +41,9 @@ class DoubleConv(nn.Module):
 class Down(nn.Module):
     """返回 (pooled, feat)：pooled 送入下一层编码器；feat(池化前) 作为解码器跳跃连接。"""
 
-    def __init__(self, in_ch, out_ch):
+    def __init__(self, in_ch, out_ch, norm: str = "batch"):
         super().__init__()
-        self.conv = DoubleConv(in_ch, out_ch)
+        self.conv = DoubleConv(in_ch, out_ch, norm=norm)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def forward(self, x):
@@ -37,10 +52,10 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    def __init__(self, in_ch, skip_ch, out_ch):
+    def __init__(self, in_ch, skip_ch, out_ch, norm: str = "batch"):
         super().__init__()
         self.up = nn.ConvTranspose2d(in_ch, in_ch // 2, kernel_size=2, stride=2)
-        self.conv = DoubleConv(in_ch // 2 + skip_ch, out_ch)
+        self.conv = DoubleConv(in_ch // 2 + skip_ch, out_ch, norm=norm)
 
     def forward(self, x, skip):
         x = self.up(x)
@@ -53,21 +68,27 @@ class Up(nn.Module):
 
 
 class UNet(nn.Module):
-    """in_ch 输入通道(3: RGB)；out_ch 输出通道(1: 根系前景)。"""
+    """in_ch 输入通道(3: RGB)；out_ch 输出通道。
 
-    def __init__(self, in_ch: int = 3, out_ch: int = 1, base: int = 64):
+    输出是**多标签**（逐通道 sigmoid，不用 softmax）：默认 3 通道对应
+    config.CLASS_NAMES = ("root", "stem", "check")，三类并不互斥
+    —— 茎横截面与根系都落在检查范围之内。
+    """
+
+    def __init__(self, in_ch: int = 3, out_ch: int = 3, base: int = 64,
+                 norm: str = "batch"):
         super().__init__()
         features = [base, base * 2, base * 4, base * 8]  # 64,128,256,512
-        self.down1 = Down(in_ch, features[0])
-        self.down2 = Down(features[0], features[1])
-        self.down3 = Down(features[1], features[2])
-        self.down4 = Down(features[2], features[3])
-        self.bottleneck = DoubleConv(features[3], features[3] * 2)      # 1024
+        self.down1 = Down(in_ch, features[0], norm=norm)
+        self.down2 = Down(features[0], features[1], norm=norm)
+        self.down3 = Down(features[1], features[2], norm=norm)
+        self.down4 = Down(features[2], features[3], norm=norm)
+        self.bottleneck = DoubleConv(features[3], features[3] * 2, norm=norm)  # 1024
 
-        self.up1 = Up(features[3] * 2, features[3], features[3])
-        self.up2 = Up(features[3], features[2], features[2])
-        self.up3 = Up(features[2], features[1], features[1])
-        self.up4 = Up(features[1], features[0], features[0])
+        self.up1 = Up(features[3] * 2, features[3], features[3], norm=norm)
+        self.up2 = Up(features[3], features[2], features[2], norm=norm)
+        self.up3 = Up(features[2], features[1], features[1], norm=norm)
+        self.up4 = Up(features[1], features[0], features[0], norm=norm)
         self.out = nn.Conv2d(features[0], out_ch, kernel_size=1)
 
     def forward(self, x):

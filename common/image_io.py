@@ -47,10 +47,11 @@ def to_model_input(img: np.ndarray) -> torch.Tensor:
 
 
 def prob_to_orig_mask(prob: torch.Tensor, w0: int, h0: int,
-                      threshold: float = 0.5) -> np.ndarray:
-    """模型概率图 [1,1,h1,w1] -> 双线性放大回原图尺寸 -> 阈值二值化，返回 bool (h0, w0)。
+                      threshold: float = 0.5, channel: int = 0) -> np.ndarray:
+    """模型概率图 [1,C,h1,w1] -> 取第 channel 通道、双线性放大回原图尺寸 -> 阈值二值化。
 
-    prob 在 cuda 上亦可，输出为 numpy bool（CPU）。
+    返回 bool (h0, w0)；prob 在 cuda 上亦可，输出为 numpy bool（CPU）。
+    channel 必须显式给定（多通道模型下默认取根系通道）。
     """
     h1, w1 = prob.shape[-2], prob.shape[-1]
     if (w1, h1) != (w0, h0):
@@ -58,13 +59,14 @@ def prob_to_orig_mask(prob: torch.Tensor, w0: int, h0: int,
                                              mode="bilinear", align_corners=False)
     else:
         up = prob.cpu().float()
-    return (up[0, 0] > threshold).numpy()
+    return (up[0, channel] > threshold).numpy()
 
 
 def prob_to_orig_mask_hysteresis(prob: torch.Tensor, w0: int, h0: int,
                                  high: float = 0.5,
-                                 low: float = 0.15) -> np.ndarray:
-    """滞回阈值二值化（推荐用于"统计根数/长度"）。
+                                 low: float = 0.15,
+                                 channel: int = 0) -> np.ndarray:
+    """滞回阈值二值化（推荐用于"统计根数/长度"），只适用于根系这类细线结构。
 
     强阈值(>high)确定可靠根段；弱阈值(>low)把细弱处断续的段接回，
     避免一根根被断开后统计成多根。返回 bool (h0, w0)。
@@ -76,7 +78,7 @@ def prob_to_orig_mask_hysteresis(prob: torch.Tensor, w0: int, h0: int,
                                              mode="bilinear", align_corners=False)
     else:
         up = prob.cpu().float()
-    p = up[0, 0].numpy()
+    p = up[0, channel].numpy()
     weak = p > low
     strong = p > high
     if not weak.any():

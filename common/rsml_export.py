@@ -1,5 +1,9 @@
 """把预测出的根系折线导出为与标注同格式的 RSML 文件。
 
+2026-09-14 起本项目不再区分一级/二级根，inference.py 只走「扁平」写法
+（每条折线一个 plant、全部 primary）。下面的「嵌套」写法（hierarchy=...）与
+check_nested_rsml 保留但已无调用点，仅作历史对照。
+
 两种写法：
 1. **扁平**（不带 hierarchy，向后兼容旧行为）：每条折线 = 一个 plant 下的一条 primary 根；
 2. **嵌套**（带 hierarchy，与标注口径一致）：每条主根一个 plant，其下 `<root ID="i.1" label="primary">`，

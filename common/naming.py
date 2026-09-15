@@ -25,6 +25,26 @@ def unique_path(path) -> Path:
         k += 1
 
 
+def create_unique_dir(parent, name) -> Path:
+    """并发安全地创建唯一目录（重名追加 -1、-2 …），返回**实际创建**的路径。
+
+    与 unique_path 的区别在并发：unique_path 是「先查存在、再由调用方 mkdir」，两个训练
+    同时启动时会双双查到「不存在」拿到同一个名字，其中一个 mkdir(exist_ok=False) 抛
+    FileExistsError 直接崩。这里把「判断」和「创建」并成一次 mkdir —— mkdir 本身是原子的，
+    撞名就换下一个候选重试。**一张卡跑 1536、另一张跑 1024 同时启动时必须用它。**
+    """
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    for k in range(1000):
+        cand = parent / (name if k == 0 else f"{name}-{k}")
+        try:
+            cand.mkdir(exist_ok=False)
+            return cand
+        except FileExistsError:
+            continue
+    raise SystemExit(f"[错误] {parent} 下 {name} 的重名副本已超过 1000 个，请先清理")
+
+
 def model_folder_name(ts: str) -> str:
     """模型文件夹名，如 model_202609091135。"""
     return f"model_{ts}"

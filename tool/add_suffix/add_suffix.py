@@ -10,8 +10,10 @@ import argparse
 import sys
 from pathlib import Path
 
-# 默认处理的扩展名（不区分大小写）：图片、RSML 标注、txt
-DEFAULT_EXTS = {".png", ".jpg", ".jpeg", ".rsml", ".txt"}
+# 默认处理的扩展名（不区分大小写）：图片、RSML 标注、labelme 标注(json)、txt
+# 注意：数据集里图片、labels/roots/*.rsml、labels/other/*.json 三处要**同时**改，
+# 否则配对就断了（漏掉 .json 会让茎/检查范围的标注对不上）。
+DEFAULT_EXTS = {".png", ".jpg", ".jpeg", ".rsml", ".json", ".txt"}
 
 
 def parse_exts(text):

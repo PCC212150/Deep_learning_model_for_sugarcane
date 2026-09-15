@@ -100,12 +100,24 @@ python tool\separate_dataset\separate_dataset.py --dir "C:\Users\21215\Desktop\R
 划分完源数据没有被改动（默认复制）。要让训练用上，把两份数据放到项目约定的位置：
 
 ```
-copy <输出目录>\train\*   datasets\train\
-copy <输出目录>\test\*    datasets\test\
+copy <输出目录>\train\*   datasets\root\train\
+copy <输出目录>\test\*    datasets\root\test\
 ```
 
-即 [config.py](../config.py) 里的 `TRAIN_DATA_DIR` / `TEST_DATA_DIR`
-（图片与同名 rsml 同目录，不要另外分子文件夹）。
+即 [config.py](../config.py) 里的 `TRAIN_DATA_DIR` / `TEST_DATA_DIR`。
+
+> **注意：本项目的数据集目录已经改成「图片与标注分开放」**（本工具的输出仍是混放，
+> 与本项目当前布局不同）：
+> ```
+> datasets\root\train\
+> ├── images\            # 图片
+> └── labels\
+>     ├── roots\         # 根系 rsml
+>     └── other\         # 茎/检查范围的 labelme json
+> ```
+> 拷进来后需要按扩展名分别归位（图片放 `images\`，`.rsml` 放 `labels\roots\`，
+> `.json` 放 `labels\other\`）。训练代码对旧布局（混放）仍能读，只是标注
+> `labels/other` 那两类会缺失。
 
 ## 常见问题
 
