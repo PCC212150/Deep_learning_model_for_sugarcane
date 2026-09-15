@@ -22,6 +22,11 @@ CHECK_MARGIN_PX）。所以这里框出来的绿框 = overlay 图里看到的那
   - 裁剪后的图片（文件名与扩展名都不变）
   - cut_report.txt：逐张记录「原图 → 框坐标 → 框占图面比例 → 状态」，便于回溯
 
+**显式给 --out 时是可续跑的**：目录已存在就直接往里写（不会再追加 -1），
+**目标文件夹里已有同名的图会直接跳过、连推理都不跑**。所以第一次跑一半中断了、
+或者后来往源文件夹里补了新图，再跑一次就只处理缺的那些，几百张图的批不会白跑第二遍。
+（不加 --out 走默认路径时仍按项目规范追加 -1，不受影响。）
+
 注意：输出图沿用**原扩展名**。源图是 jpg 的话，黑边与框边会被重新压缩一次
 （想要无损就用 png 源图，或后续统一转 png）。
 """
@@ -114,14 +119,29 @@ def main():
     if args.dry_run:
         out_dir = None
         print("[dry-run] 不写任何文件\n")
+    elif args.out is not None:
+        # 显式给了 --out：目录存在就**直接续用**（不追加 -1），已存在的同名图跳过。
+        # 这样中断了可以接着跑，补了新图再跑也只处理缺的那些。
+        out_dir = Path(args.out)
+        existed = out_dir.exists()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"输出目录: {out_dir}"
+              + ("（已存在，续用；同名文件跳过）" if existed else "") + "\n")
     else:
-        out_dir = args.out or (config.RESULT_DIR / f"{img_dir.name}_cut")
+        # 没给 --out：走默认路径，仍按项目规范追加 -1（默认路径是自动推出来的，
+        # 复用容易把不同源文件夹的结果混在一起）
+        out_dir = config.RESULT_DIR / f"{img_dir.name}_cut"
         out_dir = naming.create_unique_dir(out_dir.parent, out_dir.name)
         print(f"输出目录: {out_dir}\n")
 
     t0 = time.time()
-    report, failed = [], []
+    report, failed, skipped = [], [], []
     for k, p in enumerate(imgs, 1):
+        # 目标文件已存在 → 跳过（**在推理之前跳过**，所以重跑几乎不花时间）
+        if out_dir is not None and (out_dir / p.name).exists():
+            skipped.append(p.name)
+            report.append(f"{p.name}\t-\t-\t-\t已存在，跳过")
+            continue
         img = image_io.load_rgb(p)
         h0, w0 = img.shape[:2]
         res = predict.predict(model, img, max_side=size, stride=config.STRIDE,
@@ -151,7 +171,10 @@ def main():
                   + (f" 框占图面 {ratio:.1%}" if ok else ""))
 
     dt = time.time() - t0
-    print(f"\n完成 {len(imgs)} 张，耗时 {dt:.1f}s（{dt / max(len(imgs), 1):.2f}s/张）")
+    done = len(imgs) - len(skipped)
+    print(f"\n共 {len(imgs)} 张：本次处理 {done} 张"
+          + (f"，跳过已存在 {len(skipped)} 张" if skipped else "")
+          + f"，耗时 {dt:.1f}s（{dt / max(done, 1):.2f}s/张）")
     if failed:
         print(f"[注意] {len(failed)} 张没识别出检查范围，已原样复制（没涂黑）：")
         for n in failed[:10]:
@@ -159,12 +182,18 @@ def main():
         if len(failed) > 10:
             print(f"    …共 {len(failed)} 张，见 cut_report.txt")
     if out_dir is not None:
-        (out_dir / "cut_report.txt").write_text(
-            f"# 按检查范围裁剪报告  模型: {' + '.join(names)}  输入长边 {size}\n"
-            f"# 框外涂黑，输出尺寸与原图一致（坐标不变）\n"
-            f"# 共 {len(imgs)} 张，其中 {len(failed)} 张未识别出检查范围（原图复制）\n"
-            + "\n".join(report) + "\n", encoding="utf-8")
-        print(f"结果目录: {out_dir}\n报告文件: {out_dir / 'cut_report.txt'}")
+        rpt = out_dir / "cut_report.txt"
+        head = (f"# 按检查范围裁剪报告  模型: {' + '.join(names)}  输入长边 {size}\n"
+                f"# 框外涂黑，输出尺寸与原图一致（坐标不变）\n"
+                f"# 本次 {len(imgs)} 张：处理 {done}，跳过已存在 {len(skipped)}，"
+                f"未识别出检查范围 {len(failed)}（原图复制）\n")
+        if rpt.exists():        # 续跑：追加，不覆盖上一次的记录
+            with open(rpt, "a", encoding="utf-8") as f:
+                f.write(f"\n# ---- {time.strftime('%Y-%m-%d %H:%M:%S')} 再次运行 ----\n")
+                f.write(head + "\n".join(report) + "\n")
+        else:
+            rpt.write_text(head + "\n".join(report) + "\n", encoding="utf-8")
+        print(f"结果目录: {out_dir}\n报告文件: {rpt}")
     else:
         print("\n".join(report))
 
