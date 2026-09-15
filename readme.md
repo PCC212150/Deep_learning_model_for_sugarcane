@@ -260,6 +260,16 @@ python inference.py --dir "D:\目标图片文件夹的路径" --mm-per-px 0.1234
 `PRED_LOW_THRESHOLD` / `PRED_SPUR_LENGTH` / `MIN_ROOT_LENGTH` 这组值是在**旧模型 + 全图统计**
 口径下调出来的；改成「三通道模型 + 检查范围限定」后需在训练集上重扫一遍再定稿。
 
+5）**按检查范围裁剪图片（框外涂黑）**：见 [tool/cut_pictures](tool/cut_pictures/readme.md)。
+
+```
+python tool\cut_pictures\cut_pictures.py --dir "D:\待裁剪图片"
+```
+
+用模型识别出的检查范围把框外涂黑，**输出尺寸与输入一致**（框内像素停在原位，
+RSML 标注与掩码都还能直接对上）。走的是和 `inference.py` 同一条 `_fit_rect` 流水线，
+所以裁出来的框就是 overlay 里那个绿框。
+
 ## 结果输出
 
 1）训练的模型保存至 `model\model_YYYYMMDDHHMM\`（名称按当前 年月日 时分 创建）：
