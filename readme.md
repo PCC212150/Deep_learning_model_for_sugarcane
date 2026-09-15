@@ -173,7 +173,8 @@ CUDA_VISIBLE_DEVICES=1 python train/train.py --size 1024 --batch 8 --workers 4
 ```
 
 **clDice 拓扑损失**（`LOSS_CLDICE_W` / `CLDICE_ITERS`，2026-09-15 新增）：对**骨架**算 Dice，
-专门约束连通性。日志里会多一列 `cldice=`（正常在 0.6~0.9 且随训练爬升）：
+专门约束连通性。日志里会多一列 `cldice=`，**它应该随训练持续爬升**（3 轮冒烟时到 0.14，
+与 root_dice 同步涨）。它**恒为 1.0000 就是退化了** —— 见下面的 `CLDICE_ITERS`：
 
 ```
 [Epoch 003/5000] … lr=1.00e-03 cldice=0.1383 root_dice=0.1519 stem_dice=… check_dice=… *best*
@@ -189,8 +190,9 @@ CUDA_VISIBLE_DEVICES=1 python train/train.py --size 1024 --batch 8 --workers 4
 > | 4px | 1 | 5 | 2048 下的根（约 3.7px） |
 > | 8px | 3 | 10 | 靠近茎的根部团块 |
 >
-> 默认 `CLDICE_ITERS = 5` 覆盖 1024/2048 的根。**若日志里 `cldice=` 恒为 1.0000 就是退化了**，
-> 那时会打印一条 `[警告] 真值骨架大量为空`，把 iters 调大或把 `LOSS_CLDICE_W` 置 0。
+> 默认 `CLDICE_ITERS = 5` 覆盖 1024/2048 的根。退化时训练会打印
+> `[警告] 真值骨架大量为空`，并把这些样本的损失跳过（不让 0 混进均值掩盖问题）；
+> 这时把 iters 调大，或把 `LOSS_CLDICE_W` 置 0 关掉。
 > 代价不小：B=2、1024×688 下前向+反向 it=3 约 0.36s、it=5 约 0.56s（笔记本 RTX 5060），
 > 实测每轮从 5.0s 涨到 6.0s；服务器上按批大小线性放大。
 
