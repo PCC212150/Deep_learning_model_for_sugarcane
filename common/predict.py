@@ -91,10 +91,29 @@ def _bbox_to_model(box, w1: int, h1: int, w0: int, h0: int):
     return x0, y0, x1, y1
 
 
+def _forward_prob(model, x):
+    """前向 + sigmoid，返回概率张量 [1,C,h1,w1]。
+
+    model 可以是单个模型，也可以是**模型列表**（集成）：逐个前向，对概率取平均。
+    集成必须在同一个输入网格上做，所以调用方要保证各模型的训练 --size 一致
+    （ckpt.load_models 会校验）。多个模型断的地方不一样，平均后碎片更容易连上。
+    """
+    models = list(model) if isinstance(model, (list, tuple)) else [model]
+    acc = None
+    for m in models:
+        m.eval()
+        with torch.no_grad():
+            p = torch.sigmoid(m(x))
+        acc = p if acc is None else acc + p
+    return acc / len(models)          # 单个模型时除以 1，与原行为完全一致
+
+
 def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
             device="cuda", low_thresh: float = 0.10,
             check_margin_px: float = None, use_check: bool = True) -> dict:
     """对一张 uint8 RGB (h0, w0, 3) 图片做多通道分割预测。
+
+    model 可以是单个模型或模型列表（列表 = 集成，概率平均，见 _forward_prob）。
 
     low_thresh > 0 时根系用滞回阈值（细弱处断段接回，适合根数/长度统计），否则用 0.5。
     use_check=False 时不做检查范围限定（用于没有该标注/对比旧口径）。
@@ -118,10 +137,7 @@ def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
     w1, h1 = image_io.target_size(w0, h0, max_side, stride)
     small = image_io.resize_rgb(img, w1, h1)
     x = image_io.to_model_input(small).to(device)
-    model.eval()
-    with torch.no_grad():
-        logit = model(x)
-        prob = torch.sigmoid(logit)
+    prob = _forward_prob(model, x)
     n_ch = prob.shape[1]
     probs = [prob[0, c].float().cpu().numpy() for c in range(n_ch)]
 

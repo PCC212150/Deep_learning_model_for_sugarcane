@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 
+import config
 from common.unet import UNet
 
 # 当前流程要求的输出通道数（见 config.CLASS_NAMES：root / stem / check）
@@ -57,3 +58,68 @@ def load_unet(pth, device="cpu", require: int = REQUIRED_CHANNELS):
         "size": hp.get("size"),
     }
     return model, meta
+
+
+def resolve_model_dir(model_arg, root=None) -> Path:
+    """把 --model 的单个值解析成模型文件夹。
+
+    原来 inference.py 与 test.py 各写了一份，这里统一（改一处就够，不会两边不一致）。
+    model_arg 可以是文件夹名（可省 model_ 前缀）或绝对路径；留空 = 取 root 下最新的。
+    """
+    root = Path(root) if root else config.MODEL_DIR
+    if model_arg:
+        cand = Path(model_arg)
+        if not cand.is_absolute():
+            cand = root / model_arg
+            if not cand.exists():
+                cand = root / f"model_{model_arg}"
+        if not cand.exists():
+            avail = sorted(p.name for p in root.glob("model_*") if p.is_dir())
+            raise SystemExit(f"[错误] 找不到模型 {model_arg}。可用模型: {avail}")
+        return cand
+    dirs = [p for p in root.glob("model_*") if p.is_dir()]
+    if not dirs:
+        raise SystemExit(f"[错误] {root} 下没有模型，请先运行 train/train.py")
+    # 按文件夹名取最新（model_YYYYMMDDHHMM 有序）；mtime 会被写进目录的测试结果文件改掉
+    return max(dirs, key=lambda p: p.name)
+
+
+def resolve_pths(model_arg, root=None):
+    """把 --model 解析成一组权重路径，支持集成。返回 (pth 列表, 名称列表)。
+
+    **集成写法**：`--model model_a,model_b,model_c`（逗号分隔）。留空 = 取最新那一个。
+    """
+    root = Path(root) if root else config.MODEL_DIR
+    specs = ([s.strip() for s in str(model_arg).split(",") if s.strip()]
+             if model_arg else [None])
+    pths, names = [], []
+    for spec in specs:
+        d = resolve_model_dir(spec, root)
+        p = d / f"{d.name}.pth"
+        if not p.exists():
+            cands = sorted(d.glob("*.pth"))
+            if not cands:
+                raise SystemExit(f"[错误] 模型文件夹中没有 .pth 权重: {d}")
+            p = cands[-1]
+        pths.append(p)
+        names.append(d.name)
+    return pths, names
+
+
+def load_models(pths, device="cpu", require: int = REQUIRED_CHANNELS):
+    """加载一个或多个权重（集成用），返回 (models, metas)。
+
+    集成要求所有模型训练时的输入长边一致：概率图必须在同一个网格上平均。不一致会直接
+    报错，而不是静默按第一个模型的尺寸跑 —— 那会让其余模型在错误的尺度上推理，结果看似
+    正常实则全错（尺度必须与训练一致，实测 1024 训的模型用 2048 推理，总长误差翻倍）。
+    """
+    models, metas = [], []
+    for p in pths:
+        m, meta = load_unet(p, device, require=require)
+        models.append(m)
+        metas.append(meta)
+    sizes = sorted({meta.get("size") for meta in metas if meta.get("size")})
+    if len(sizes) > 1:
+        raise SystemExit(f"[错误] 集成要求所有模型用同一个输入长边，当前是 {sizes}。"
+                         f"请挑选训练 --size 相同的模型，或分开跑。")
+    return models, metas

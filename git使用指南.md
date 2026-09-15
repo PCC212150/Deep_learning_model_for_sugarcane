@@ -4,6 +4,11 @@
 
 仓库：`https://github.com/PCC212150/Deep_learning_model_for_sugarcane.git`
 
+0.镜像克隆：git clone https://gh-proxy.com/https://github.com/PCC212150/Deep_learning_model_for_sugarcane.git
+
+1.
+
+
 ---
 
 ## 一、先搞清楚：什么进 Git，什么不进

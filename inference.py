@@ -47,25 +47,6 @@ from common.rsml_export import write_rsml  # noqa: E402
 from common.skeleton_stats import analyze_mask_anchored  # noqa: E402
 
 
-def resolve_model_dir(model_arg) -> Path:
-    root = config.MODEL_DIR
-    if model_arg:
-        cand = Path(model_arg) if Path(model_arg).is_absolute() else root / model_arg
-        if not cand.exists():
-            cand = root / f"model_{model_arg}"
-        if not cand.exists():
-            avail = sorted(p.name for p in root.glob("model_*") if p.is_dir())
-            print(f"[错误] 找不到模型 {model_arg}。可用模型: {avail}")
-            sys.exit(1)
-        return cand
-    dirs = [p for p in root.glob("model_*") if p.is_dir()]
-    if not dirs:
-        print(f"[错误] model 目录下没有模型，请先运行 train/train.py")
-        sys.exit(1)
-    # 按文件夹名取最新（model_YYYYMMDDHHMM 有序）；mtime 会被写进目录的测试结果文件改掉
-    return max(dirs, key=lambda p: p.name)
-
-
 def parse_argv():
     """解析参数，兼容 readme 的 --model_xxx 与裸参数写法。"""
     model, folder, mm_per_px, size = None, None, None, None
@@ -140,20 +121,14 @@ def main():
         print(f"[错误] 目标图片文件夹不存在: {img_dir}")
         sys.exit(1)
 
-    model_dir = resolve_model_dir(model_arg)
-    pth = model_dir / f"{model_dir.name}.pth"
-    if not pth.exists():
-        pths = sorted(model_dir.glob("*.pth"))
-        pth = pths[-1] if pths else None
-    if pth is None or not pth.exists():
-        print(f"[错误] 模型文件夹中没有 .pth 权重: {model_dir}")
-        sys.exit(1)
+    pths, names = ckpt.resolve_pths(model_arg)
 
     import torch
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, meta = ckpt.load_unet(pth, device)
-    print(f"模型: {model_dir.name} | 权重: {pth.name} | 设备: {device} | "
-          f"输出 {meta['out_ch']} 通道"
+    model, metas = ckpt.load_models(pths, device)     # 集成时 model 是模型列表
+    meta = metas[0]
+    tag = f"集成 {len(names)} 个" if len(names) > 1 else "模型"
+    print(f"{tag}: {' + '.join(names)} | 设备: {device} | 输出 {meta['out_ch']} 通道"
           + (f" (epoch {meta['epoch']})" if meta.get("epoch") else ""))
     # 输入尺寸必须与训练时一致（实测：1024 训的模型用 2048 推理，总长误差从 4278px 涨到 9675px）
     size = size_arg or meta.get("size") or config.MAX_SIDE
@@ -245,7 +220,7 @@ def main():
                 f"（与标注口径一致）；「起点锚定(条)」是成功锚定的条数\n")
         f.write(f"# 单位：px（像素）；" + (f"mm 列按 1 px = {mm} mm 换算\n"
                                         if mm else "未做 mm 换算（--mm-per-px 关闭）\n"))
-        f.write(f"# 参数：模型 {model_dir.name}，输入长边 {size}，"
+        f.write(f"# 参数：模型 {' + '.join(names)}，输入长边 {size}，"
                 f"低阈值 {config.PRED_LOW_THRESHOLD}，剪枝 {config.PRED_SPUR_LENGTH}px，"
                 f"最短根 {config.MIN_ROOT_LENGTH}px，"
                 f"锚定阈值 {config.STEM_ANCHOR_FACTOR}×茎半径"

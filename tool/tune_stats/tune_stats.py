@@ -87,35 +87,14 @@ def _ints(s):
     return [int(v) for v in str(s).split(",") if v.strip()]
 
 
-def resolve_model_dir(model_arg):
-    """与 test.py 同规则：给了名字就找它，没给就取最新。"""
-    root = config.MODEL_DIR
-    if model_arg:
-        cand = Path(model_arg) if Path(model_arg).is_absolute() else root / model_arg
-        if not cand.exists():
-            cand = root / f"model_{model_arg}"
-        if not cand.exists():
-            avail = sorted(p.name for p in root.glob("model_*") if p.is_dir())
-            sys.exit(f"[错误] 找不到模型 {model_arg}。可用模型: {avail}")
-        return cand
-    dirs = [p for p in root.glob("model_*") if p.is_dir()]
-    if not dirs:
-        sys.exit(f"[错误] {root} 下没有模型，请先运行 train/train.py")
-    # 按文件夹名取最新：model_YYYYMMDDHHMM 本身有序，而 mtime 会被写进目录的测试结果文件改掉
-    return max(dirs, key=lambda p: p.name)
-
-
 def load_model(model_arg, device):
-    folder = resolve_model_dir(model_arg)
-    pth = folder / f"{folder.name}.pth"
-    if not pth.exists():
-        pths = sorted(folder.glob("*.pth"))
-        if not pths:
-            sys.exit(f"[错误] {folder} 中没有 .pth 权重文件")
-        pth = pths[-1]
-    model, meta = ckpt.load_unet(pth, device)
-    model.eval()
-    return model, folder, meta
+    """模型解析统一走 common/ckpt（原来这里、test.py、inference.py 各写了一份）。
+    --model 同样支持逗号分隔的多模型集成。"""
+    pths, names = ckpt.resolve_pths(model_arg)
+    model, metas = ckpt.load_models(pths, device)   # 集成时 model 是列表
+    for m in (model if isinstance(model, list) else [model]):
+        m.eval()
+    return model, Path(pths[0]).parent, metas[0]
 
 
 def score_of(e):

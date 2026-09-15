@@ -42,6 +42,65 @@ def dice_loss(prob, target):
     return 1.0 - (2.0 * inter + eps) / (den + eps)
 
 
+def _soft_erode(img):
+    """软腐蚀：3x3 十字的最小池化。用 max_pool 实现（-maxpool(-x) = minpool），
+    这样梯度能穿过池化——这是软骨架能当损失用的关键。"""
+    p1 = -F.max_pool2d(-img, (3, 1), (1, 1), (1, 0))     # 竖直方向 3 邻域取最小
+    p2 = -F.max_pool2d(-img, (1, 3), (1, 1), (0, 1))     # 水平方向 3 邻域取最小
+    return torch.min(p1, p2)
+
+
+def _soft_dilate(img):
+    return F.max_pool2d(img, (3, 3), (1, 1), (1, 1))
+
+
+def _soft_open(img):
+    return _soft_dilate(_soft_erode(img))
+
+
+def soft_skel(img, iters):
+    """软骨架化（clDice 论文的实现）。
+
+    每轮腐蚀一层，把「这一层的残差」并进骨架：细结构在第一轮就整体成为骨架，
+    粗结构则要腐蚀若干轮才露出中心线。**因此 iters 必须 ≥ 结构的最大半径**，
+    否则骨架为 0（见 config.CLDICE_ITERS 的说明）。
+    """
+    img1 = _soft_open(img)
+    skel = F.relu(img - img1)
+    for _ in range(iters):
+        img = _soft_erode(img)
+        img1 = _soft_open(img)
+        delta = F.relu(img - img1)
+        skel = skel + F.relu(delta - skel * delta)       # 软 OR：把新残差并进骨架
+    return skel
+
+
+def cldice_loss(prob, target, iters, chans):
+    """按通道算 clDice 损失，返回 (loss[B,K], 退化标记[B,K] bool)。
+
+    prob/target: (B,C,H,W)；chans 是要算的通道号列表。
+    tprec = 预测骨架落在真值掩码内的比例（惩罚"多画出的骨架"）
+    tsens = 真值骨架被预测掩码覆盖的比例（惩罚"断掉的骨架"）
+    退化 = 真值骨架为空（iters 太小），此时损失恒为 0，必须让调用方知道。
+    """
+    eps = 1e-6
+    losses, degen = [], []
+    for c in chans:
+        p, t = prob[:, c:c + 1], target[:, c:c + 1]
+        sk_p, sk_t = soft_skel(p, iters), soft_skel(t, iters)
+        sp = sk_p.sum(dim=(1, 2, 3))
+        st = sk_t.sum(dim=(1, 2, 3))
+        tprec = ((sk_p * t).sum(dim=(1, 2, 3)) + eps) / (sp + eps)
+        tsens = ((sk_t * p).sum(dim=(1, 2, 3)) + eps) / (st + eps)
+        denom = tprec + tsens
+        cl = 2.0 * tprec * tsens / denom.clamp(min=eps)
+        d = st < 0.5                                   # 真值骨架为空 = 退化
+        # 退化样本不给损失（否则会按 clDice=1 白白产生一个 0，掩盖问题）
+        losses.append(torch.where(d, torch.zeros_like(cl), 1.0 - cl))
+        degen.append(d)
+    return torch.stack(losses, dim=1), torch.stack(degen, dim=1)
+
+
 def channel_weights(base, valid):
     """(C,) 基准权重 × (B,C) 通道有效性 -> (B,C)；缺标注的通道权重置 0（不参与损失）。"""
     w = torch.as_tensor(base, dtype=torch.float32,
@@ -172,6 +231,9 @@ def main():
     # 逐通道正样本加权，(1,C,1,1) 对应 (B,C,H,W) 的通道维（见 config.LOSS_POS_WEIGHT）
     pos_w = torch.as_tensor(config.LOSS_POS_WEIGHT, dtype=torch.float32,
                             device=device).view(1, N_CH, 1, 1)
+    # clDice 只对权重非零的通道计算（软骨架迭代贵，别浪费在茎/检查范围上）
+    cld_chans = [c for c, w in enumerate(config.LOSS_CLDICE_W)
+                 if w > 0.0] if config.CLDICE_ITERS > 0 else []
 
     # ---- 输出目录：model/model_年月日时分，重名追加 -1/-2… ----
     ts = naming.timestamp()
@@ -191,6 +253,8 @@ def main():
                     "loss_bce_w": list(config.LOSS_BCE_W),
                     "loss_dice_w": list(config.LOSS_DICE_W),
                     "loss_pos_weight": list(config.LOSS_POS_WEIGHT),
+                    "loss_cldice_w": list(config.LOSS_CLDICE_W),
+                    "cldice_iters": config.CLDICE_ITERS,
                     "params_M": round(n_params / 1e6, 2),
                     "start": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "model_name": folder.name})
@@ -215,6 +279,9 @@ def main():
         f"Dice权重 {config.LOSS_DICE_W} | 正样本权重 {config.LOSS_POS_WEIGHT}")
     log(f"[信息] 学习率 {args.lr} | 平台期 {args.lr_patience} 轮不减半就 ×{config.LR_FACTOR}"
         f"（下限 {config.MIN_LR}）| 早停 {args.patience} 轮")
+    log(f"[信息] clDice 拓扑损失: "
+        + (f"通道 {cld_chans} 权重 {config.LOSS_CLDICE_W} iters {config.CLDICE_ITERS}"
+           if cld_chans else "关闭"))
     log(f"[信息] 模型目录: {folder}")
 
     # ---- 训练循环 ----
@@ -227,6 +294,7 @@ def main():
             t_ep = time.time()
             model.train()
             loss_sum, n_batch = 0.0, 0
+            cd_sum, cd_valid, cd_degen = 0.0, 0, 0
             optimizer.zero_grad(set_to_none=True)
             n_micro = 0
             for i_batch, (x, y, _, valid) in enumerate(loader):
@@ -247,6 +315,17 @@ def main():
                     loss_dice = ((dice_loss(prob.float(), y) * wd).sum()
                                  / wd.sum().clamp(min=1e-6))
                     loss = loss_bce + loss_dice
+                    # clDice：只算权重非零的通道（软骨架迭代较贵，别浪费在茎/检查范围上）
+                    if cld_chans:
+                        cd, dg = cldice_loss(prob.float(), y, config.CLDICE_ITERS,
+                                             cld_chans)
+                        wc = channel_weights(config.LOSS_CLDICE_W, valid)[:, cld_chans]
+                        loss = loss + (cd * wc).sum() / wc.sum().clamp(min=1e-6)
+                        # 统计只算非退化样本，否则退化的 0 会把均值拉低、掩盖问题
+                        ok = ~dg
+                        cd_sum += float(cd[ok].sum())
+                        cd_valid += int(ok.sum())
+                        cd_degen += int(dg.sum())
                 # 梯度累积：把 loss 按累积步数缩放，攒够 accum 个 micro-batch 再更新一次
                 scaler.scale(loss / args.accum).backward()
                 n_micro += 1
@@ -322,9 +401,19 @@ def main():
                     cur_lr = new_lr
             extra = "".join(f" {n}_dice={d:.4f}"
                             for n, d in zip(config.CLASS_NAMES, per_ch_dice))
+            cd_str = ""
+            if cld_chans:
+                n_all = cd_valid + cd_degen
+                cd_str = (f" cldice={1.0 - cd_sum / max(cd_valid, 1):.4f}"
+                          if cd_valid else " cldice=nan")
+                # 骨架退化 = iters 太小，此时 clDice 恒为 0 损失、梯度静默消失
+                if n_all and cd_degen / n_all > 0.5 and epoch <= 2:
+                    cd_str += "  [警告] 真值骨架大量为空：CLDICE_ITERS=" \
+                              f"{config.CLDICE_ITERS} 太小（需 ≥ 根在模型分辨率下的最大半径），" \
+                              "clDice 实际没起作用，请调大或把 LOSS_CLDICE_W 置 0"
             log(f"[Epoch {epoch:03d}/{args.epochs}] loss={train_loss:.4f} "
                 f"val_dice={val_dice:.4f} val_iou={val_iou:.4f} time={dt:.1f}s"
-                f" lr={cur_lr:.2e}"
+                f" lr={cur_lr:.2e}" + cd_str
                 + extra
                 + (" *best*" if improved else "") + note)
 

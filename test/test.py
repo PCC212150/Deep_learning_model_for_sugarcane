@@ -59,39 +59,18 @@ def parse_args():
     return p.parse_args(preprocess_argv())
 
 
-def resolve_model_dir(model_arg: str | None, root=None) -> Path:
-    root = root or config.MODEL_DIR
-    if model_arg:
-        cand = Path(model_arg) if Path(model_arg).is_absolute() else root / model_arg
-        if not cand.exists():
-            cand = root / f"model_{model_arg}"  # 兼容省略前缀
-        if not cand.exists():
-            avail = sorted(p.name for p in root.glob("model_*") if p.is_dir())
-            print(f"[错误] 找不到模型 {model_arg}。可用模型: {avail}")
-            sys.exit(1)
-        return cand
-    dirs = [p for p in root.glob("model_*") if p.is_dir()]
-    if not dirs:
-        print(f"[错误] model 目录下没有模型，请先运行 train/train.py。{root}")
-        sys.exit(1)
-    # 按文件夹名取最新（model_YYYYMMDDHHMM 有序）；mtime 会被写进目录的测试结果文件改掉
-    return max(dirs, key=lambda p: p.name)
-
-
 def main():
     args = parse_args()
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available()
                           else "cuda")
-    folder = resolve_model_dir(args.model, args.out_dir)
-    pth = folder / f"{folder.name}.pth"
-    print(f"模型目录: {folder}")
-    if not pth.exists():
-        pths = sorted(folder.glob("*.pth"))
-        if not pths:
-            print(f"[错误] {folder} 中没有 .pth 权重文件")
-            sys.exit(1)
-        pth = pths[-1]
-    model, meta = ckpt.load_unet(pth, device)
+    # --model 支持逗号分隔的多个模型（集成），见 ckpt.resolve_pths
+    pths, names = ckpt.resolve_pths(args.model, args.out_dir)
+    pth = pths[0]
+    print(f"模型目录: {pth.parent}")
+    if len(names) > 1:
+        print(f"集成 {len(names)} 个: {' + '.join(names)}")
+    model, metas = ckpt.load_models(pths, device)     # 集成时 model 是模型列表
+    meta = metas[0]
     print(f"权重: {pth.name} (保存于 epoch {meta.get('epoch', '?')}"
           + (f"，训练验证Dice {meta['val_dice']:.4f}" if meta.get("val_dice") else "")
           + f"，输出 {meta['out_ch']} 通道)")
@@ -209,7 +188,7 @@ def main():
         f"# 测试总耗时 {el:.1f}s | 单图平均 {el / max(len(pairs), 1):.2f}s",
     ]
 
-    csv_path = naming.unique_path(folder / f"model_test_{naming.timestamp()}.csv")
+    csv_path = naming.unique_path(pth.parent / f"model_test_{naming.timestamp()}.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(header)
