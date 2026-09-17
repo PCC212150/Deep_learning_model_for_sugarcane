@@ -7,6 +7,8 @@
     python inference.py --dir D:\\...\\某图片文件夹                    # 模型省略=最新
     python inference.py --dir D:\\...\\某图片文件夹 --mm-per-px 0.1234  # CSV 追加 mm 列
     python inference.py --dir D:\\...\\某图片文件夹 --size 1536         # 覆盖输入长边
+    python inference.py --dir D:\\...\\某图片文件夹 --save-mask         # 额外存 _mask.png
+    python inference.py --model model_a,model_b --dir ...              # 多模型集成
 
 输入长边默认取**模型训练时的设置**（从权重里读），只有显式给 --size 才覆盖 ——
 尺度必须与训练一致，否则精度会明显下降。
@@ -18,16 +20,23 @@
 
 结果：result/{目标文件夹名}/
     - {目标文件夹名}.csv    每行一张图（UTF-8 BOM，Excel 直接双击可开）：
-                            图片名 根数量 起点锚定(条) 总根长(px) 平均根长(px) 最长根(px)
-                            各根长度(px) 茎面积(px²) 检查区面积(px²) check_ok root_ok
-                            「各根长度」用分号分隔；--mm-per-px>0 时行尾追加 mm 列；
+                            图片名 根数量 起点锚定(条) 总根长(px) 总根系面积(px²)
+                            平均根长(px) 最长根(px) 各根长度(px) 茎面积(px²)
+                            检查区面积(px²) check_ok root_ok
+                            「各根长度」用分号分隔；--mm-per-px>0 时追加 mm 列；
                             文件末尾是若干以 # 开头的汇总行（Excel 可见，脚本可跳过）
     - {图片名}_overlay.png  原图 + 根系(红) + 茎(橙) + 检查范围(绿框)
-    - {图片名}_mask.png     统计口径的根系掩码（已限定在检查范围内，黑底白根）
-    - {图片名}_stem.png     识别出的茎横截面掩码
-    - {图片名}_check.png    识别出的检查范围掩码
     - {图片名}.rsml         预测根系折线，每条折线一个 plant（不再分主根/侧根）
+    - {图片名}_mask.png     统计口径的根系掩码（**默认不存**，加 --save-mask 才出）
 目录/文件重名时自动追加 -1、-2 …（项目规范）。
+
+**总根系面积** = 统计口径的根系掩码像素数（已限定在检查范围内），单位 px²。
+它比根长脆弱得多：根长是骨架长度、几乎不受线宽/阈值影响，而面积随线宽与二值化阈值
+**线性**变化（换个阈值能差一倍）。**适合同一条流水线内做相对比较，不要跨版本比绝对值。**
+
+**逐张输出什么**（2026-09-17 起精简）：默认只有 `_overlay.png` + `.rsml` 两个文件。
+`_stem.png` / `_check.png` 不再输出（overlay 里已用颜色标出），`_mask.png` 需要时加
+`--save-mask`。这样每张图少写 3 个 5472x3648 的大 PNG，磁盘和耗时都省一截。
 """
 import csv
 import sys
@@ -50,11 +59,15 @@ from common.skeleton_stats import analyze_mask_anchored  # noqa: E402
 def parse_argv():
     """解析参数，兼容 readme 的 --model_xxx 与裸参数写法。"""
     model, folder, mm_per_px, size = None, None, None, None
+    save_mask = False
     tokens = sys.argv[1:]
     i = 0
     while i < len(tokens):
         t = tokens[i]
-        if t == "--model":
+        if t == "--save-mask":
+            save_mask = True
+            i += 1
+        elif t == "--model":
             model = tokens[i + 1] if i + 1 < len(tokens) else None
             i += 2
         elif t == "--mm-per-px":
@@ -85,7 +98,7 @@ def parse_argv():
                 print(f"[错误] 无法识别的参数: {t}")
                 sys.exit(1)
             i += 1
-    return model, folder, mm_per_px, size
+    return model, folder, mm_per_px, size, save_mask
 
 
 def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.ndarray:
@@ -110,7 +123,7 @@ def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.n
 
 
 def main():
-    model_arg, folder_arg, mm_arg, size_arg = parse_argv()
+    model_arg, folder_arg, mm_arg, size_arg, save_mask = parse_argv()
     if not folder_arg:
         print(__doc__)
         sys.exit(1)
@@ -157,14 +170,15 @@ def main():
     csv_path = naming.unique_path(out_dir / f"{img_dir.name}.csv")
     mm = mm_per_px if mm_per_px and mm_per_px > 0 else 0.0
 
-    header = ["图片名", "根数量", "起点锚定(条)", "总根长(px)", "平均根长(px)",
-              "最长根(px)", "各根长度(px)", "茎面积(px²)", "检查区面积(px²)", "check_ok",
-              "root_ok"]
+    header = ["图片名", "根数量", "起点锚定(条)", "总根长(px)", "总根系面积(px²)",
+              "平均根长(px)", "最长根(px)", "各根长度(px)", "茎面积(px²)",
+              "检查区面积(px²)", "check_ok", "root_ok"]
     if mm:
-        header += ["总根长(mm)", "平均根长(mm)", "最长根(mm)"]
+        header += ["总根长(mm)", "总根系面积(mm²)", "平均根长(mm)", "最长根(mm)"]
 
     t_start = time.time()
-    n_out = 5                 # 每张图输出：_mask/_stem/_check/_overlay.png + .rsml
+    # 每张图输出：_overlay.png + .rsml（--save-mask 时再加 _mask.png）
+    n_out = 3 if save_mask else 2
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(header)
@@ -182,46 +196,57 @@ def main():
                 max_px=config.STEM_ANCHOR_MAX_PX)
             count, lens, total = st["count"], st["lengths"], st["total"]
             len_str = ";".join(f"{v:.1f}" for v in lens) if lens else "-"
+            # 总根系面积 = 统计口径的根系掩码像素数（已限定在检查范围内），单位 px²。
+            # 注意它比根长脆弱得多：根长是骨架长度，几乎不受线宽/阈值影响；
+            # 面积随线宽、二值化阈值**线性**变化（换个阈值能差一倍）。
+            # 适合同一条流水线内做相对比较，不要跨版本比绝对值。
+            root_area = int(res["mask_counted"].sum())
             stem_area = int(masks[CH_STEM].sum()) if len(masks) > CH_STEM else 0
             check_area = (int((res["check_box"][2] - res["check_box"][0])
                               * (res["check_box"][3] - res["check_box"][1]))
                           if res["check_ok"] else img.shape[0] * img.shape[1])
             row = [p.name, count, st["anchored_count"], f"{total:.1f}",
+                   root_area,
                    f"{total / count:.1f}" if count else "0.0",
                    f"{max(lens):.1f}" if lens else "0.0", len_str,
                    stem_area, check_area, "是" if res["check_ok"] else "否",
                    "是" if res.get("root_ok", True) else "否"]
             if mm:
-                row += [f"{total * mm:.1f}",
+                row += [f"{total * mm:.1f}", f"{root_area * mm * mm:.1f}",
                         f"{total / count * mm:.1f}" if count else "0.0",
                         f"{max(lens) * mm:.1f}" if lens else "0.0"]
             wr.writerow(row)
 
             # ---- 保存识别结果图片 ----
-            Image.fromarray((res["mask_counted"].astype(np.uint8) * 255)).save(
-                out_dir / f"{p.stem}_mask.png")
-            for ch, suffix in ((CH_STEM, "_stem"), (CH_CHECK, "_check")):
-                m = masks[ch] if len(masks) > ch else np.zeros_like(res["mask_counted"])
-                Image.fromarray((m.astype(np.uint8) * 255)).save(
-                    out_dir / f"{p.stem}{suffix}.png")
+            # 默认只出 _overlay.png（肉眼看结果）+ .rsml（数据）。
+            # _stem / _check 两张掩码图 2026-09-17 起不再输出：overlay 里已经用颜色标了，
+            # _mask 默认也不存（要看统计口径的掩码时加 --save-mask）。
+            # 这三张都是 5472x3648 的大图，一张 20MB 上下，省下来是实打实的磁盘和时间。
             Image.fromarray(make_overlay(img, masks, res["check_box"])).save(
                 out_dir / f"{p.stem}_overlay.png")
+            if save_mask:
+                Image.fromarray((res["mask_counted"].astype(np.uint8) * 255)).save(
+                    out_dir / f"{p.stem}_mask.png")
 
             # ---- 导出 RSML（每条折线一个 plant，不再分主根/侧根） ----
             rsml_path = write_rsml(out_dir / f"{p.stem}.rsml", file_key=p.stem,
                                    polylines=st["paths"])
 
             print(f"[{k}/{len(imgs)}] {p.name}: 根数 {count} | 总长 {total:.1f} px | "
+                  f"根面积 {root_area} px² | "
                   f"各根长 {len_str[:60]}{'…' if len(len_str) > 60 else ''}")
             print(f"    检查范围 {'已识别' if res['check_ok'] else '未识别(全图统计)'} | "
-                  f"茎面积 {stem_area} px² | 起点已锚定到茎 "
-                  f"{st['anchored_count']}/{count} 条 | 已保存: {p.stem}_mask/_stem/"
-                  f"_check/_overlay.png + .rsml")
+                  f"起点已锚定到茎 {st['anchored_count']}/{count} 条 | 已保存: "
+                  f"{p.stem}_overlay.png + .rsml"
+                  + (f" + {p.stem}_mask.png" if save_mask else ""))
         f.write(f"# 根系统计范围：模型识别出的检查范围（check_background），范围外不计入\n")
         f.write(f"# 起点锚定：每条预测折线的起点已补到茎边界，补回的那一段计入根长"
                 f"（与标注口径一致）；「起点锚定(条)」是成功锚定的条数\n")
         f.write(f"# 单位：px（像素）；" + (f"mm 列按 1 px = {mm} mm 换算\n"
                                         if mm else "未做 mm 换算（--mm-per-px 关闭）\n"))
+        f.write("# 总根系面积 = 统计口径的根系掩码像素数（已限定在检查范围内）。"
+                "注意它比根长脆弱：根长几乎不受线宽/阈值影响，面积随阈值**线性**变化"
+                "（换个阈值能差一倍）—— 适合同一条流水线内相对比较，别跨版本比绝对值\n")
         f.write(f"# 参数：模型 {' + '.join(names)}，输入长边 {size}，"
                 f"低阈值 {config.PRED_LOW_THRESHOLD}，剪枝 {config.PRED_SPUR_LENGTH}px，"
                 f"最短根 {config.MIN_ROOT_LENGTH}px，"
@@ -233,8 +258,8 @@ def main():
     print(f"\n推理完成，总耗时 {el:.1f}s | 平均 {el / len(imgs):.2f}s/张")
     print(f"结果目录: {out_dir}")
     print(f"结果文件: {csv_path}")
-    print(f"已保存文件: 每张图 {n_out} 个（图片名_mask/_stem/_check/_overlay.png + .rsml），"
-          f"共 {len(imgs) * n_out} 个")
+    print(f"已保存文件: 每张图 {n_out} 个（图片名_overlay.png + .rsml"
+          + (" + _mask.png" if save_mask else "") + f"），共 {len(imgs) * n_out} 个")
 
 
 if __name__ == "__main__":

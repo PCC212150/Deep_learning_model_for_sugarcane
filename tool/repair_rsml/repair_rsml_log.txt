@@ -1,0 +1,3 @@
+﻿# RSML <file-key> 修复记录（旧值 → 新值，需要回滚可按此手工改回）
+相对路径,旧 file-key,新 file-key
+plant_ S062-2_20251116ST.rsml,plant_ S062-2,plant_ S062-2_20251116ST

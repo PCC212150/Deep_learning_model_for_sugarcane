@@ -1,11 +1,24 @@
 # 数据集划分工具（train / test / val）
 
-目的：把一个文件夹里的数据集按比例划分为 train / test / val 三份，**验证集默认不分配**。
+目的：把一个**扁平**的数据集文件夹按比例划分为 train / test / val，并**输出成项目要的嵌套布局**
+（2026-09-17 起）。
 
-划分单位是「组」而不是单个文件：**同名的一批文件算一组**（如 `plant_ S062-1.png` 与
-`plant_ S062-1.rsml`），整组进同一份。这样图片和它的标注永远不会被拆到不同集合里
-（训练代码 [common/dataset.py](../common/dataset.py) 的 `discover_pairs` 要求图片与同名 `.rsml`
-同目录成对，拆散会导致训练时整组数据被丢掉）。
+   源（扁平）                          输出（嵌套）
+   root/                               root/train/images/
+   ├── plant_ S062-1_xxx.jpg      →    root/train/labels/roots/
+   ├── plant_ S062-1_xxx.rsml          root/train/labels/other/
+   ├── plant_ S062-1_xxx.json          root/test/…（同构）
+   └── …
+
+也就是说「扁平 → 嵌套」这一步转换直接在划分里做掉了，不需要另外的转换脚本。
+想要过去那种所有文件平铺在一个 split 目录里的输出，加 `--flat`。
+
+**划分单位默认是「植株」而不是单个文件**：同一植株的多个时点整株进同一侧
+（`plant_ S062-1_20251116ST` 和 `..._20251126ST` 是同一株的两个时点，分到两边就是同株泄漏）。
+植株识别用 [common/dataset.py](../common/dataset.py) 的 `plant_key`。想按单个文件划分加 `--by-file`。
+
+无论按哪种单位，**同名的图片/rsml/json 永远在一组、不会被拆散** —— 拆散会导致训练时
+整组数据被丢掉（`discover_pairs` 要求图片与同名 `.rsml` 在同一侧）。
 
 ## 运行环境
 

@@ -146,6 +146,21 @@ def _jitter(img: np.ndarray) -> np.ndarray:
     return out
 
 
+_warned_empty_root = set()
+
+
+def _warn_empty_root(rsml_path):
+    """同一个文件只吵一次（数据集构造 + 评测会对同一张图问好几遍）。"""
+    key = str(rsml_path)
+    if key in _warned_empty_root:
+        return
+    _warned_empty_root.add(key)
+    print(f"[警告] {Path(rsml_path).name} 里没有任何根系几何（<geometry>），"
+          f"根通道会被当成「无效」屏蔽掉，不参与训练。\n"
+          f"        多半是标注没画就保存了 —— 请补标，或把这张图移出数据集；"
+          f"留着它会让模型学成「这张没有根」。")
+
+
 def build_target_masks(rsml_path, other_path, orig_size, target_size, mask_width):
     """画三通道真值掩码，返回 (masks[h,w,3] bool, chan_valid[3] float)。
 
@@ -157,13 +172,22 @@ def build_target_masks(rsml_path, other_path, orig_size, target_size, mask_width
     w1, h1 = target_size
     masks = np.zeros((h1, w1, 3), dtype=bool)
     valid = np.zeros(3, dtype=np.float32)
-    valid[CH_ROOT] = 1.0                       # 根系标注是配对前提，必然存在
 
     line_w = gt_mask.target_line_width(mask_width, orig_size, target_size)
     roots = parse_rsml(rsml_path)
     polys = [gt_mask.scale_points(r.points, orig_size, target_size)
              for r in roots if len(r.points) >= 2]
     masks[:, :, CH_ROOT] = gt_mask.draw_polylines_at(polys, target_size, line_w)
+
+    # 根系标注是配对前提，但**文件存在 ≠ 里面画了东西**：RSMLGenerator 里没标就保存会留下
+    # 一个没有 <geometry> 的空壳。那种图如果照常按「全背景」训练，等于教模型"这张没有根"，
+    # 是有害的 —— 实测 2026-09-17 导入的数据集里 plant_S003-3 就是这种（560 字节、0 个控制点）。
+    # 所以这里把它标成**无效通道**（损失屏蔽），并告警一次，让人去补标或移出数据集。
+    if not masks[:, :, CH_ROOT].any():
+        valid[CH_ROOT] = 0.0
+        _warn_empty_root(rsml_path)
+    else:
+        valid[CH_ROOT] = 1.0
 
     if other_path is not None:
         lab = parse_other(other_path, image_size=orig_size)
