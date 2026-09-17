@@ -118,17 +118,37 @@ def parse_argv():
     return model, folder, mm_per_px, size, save_mask, overlay_fmt, jobs
 
 
+_BLEND_LUT = {}
+
+
+def _blend_lut(color, alpha):
+    """混合用查找表：uint8 像素值 -> 混合后的 uint8 值，形状 (256, 3)。
+
+    与 `arr.astype(float32)*(1-alpha) + color*alpha` 后 clip+取整**逐位相同**
+    （同样的 float32 运算，只是提前对 256 个可能取值算好）。
+    """
+    key = (tuple(color), alpha)
+    if key not in _BLEND_LUT:
+        v = (np.arange(256, dtype=np.float32)[:, None] * (1.0 - alpha)
+             + np.asarray(color, np.float32)[None, :] * alpha)
+        _BLEND_LUT[key] = np.clip(v, 0, 255).astype(np.uint8)
+    return _BLEND_LUT[key]
+
+
 def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.ndarray:
     """把识别结果叠到原图上：根(红) + 茎(橙)，检查范围画绿框。
 
-    单缓冲一次性合成（每张 5472x3648 图约 0.27s / 514MB 峰值；逐层转换会翻几倍）。
+    在 uint8 上直接查表混合，不再升到 float32：省掉一张 5472x3648 的 float32 拷贝
+    （240MB，多进程并发时这个内存峰值是按份数翻的），也快一截。
+    根/茎掩码若重叠，先混的那一层会先量化到 uint8 —— 实测差异在 ±1 灰阶、且只影响
+    这张**给人看**的图，CSV / RSML / 掩码一概不受影响（统计在它之前就算完了）。
     """
-    out = img.astype(np.float32)
+    out = img.copy()
+    cols = np.arange(out.shape[2])          # 逐通道查表，避免 lut[px] 广播成 (N,3,3)
     for ch, color in ((CH_ROOT, (255, 0, 0)), (CH_STEM, (255, 165, 0))):
         m = masks[ch]
-        if m.any():
-            out[m] = out[m] * (1.0 - alpha) + np.asarray(color, np.float32) * alpha
-    out = np.clip(out, 0, 255).astype(np.uint8)
+        if m is not None and m.any():
+            out[m] = _blend_lut(color, alpha)[out[m], cols]
     if check_box is not None:
         h, w = out.shape[:2]
         im = Image.fromarray(out)

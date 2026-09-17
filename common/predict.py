@@ -110,13 +110,17 @@ def _forward_prob(model, x):
 
 def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
             device="cuda", low_thresh: float = 0.10,
-            check_margin_px: float = None, use_check: bool = True) -> dict:
+            check_margin_px: float = None, use_check: bool = True,
+            full_channels=(CH_ROOT, CH_STEM)) -> dict:
     """对一张 uint8 RGB (h0, w0, 3) 图片做多通道分割预测。
 
     model 可以是单个模型或模型列表（列表 = 集成，概率平均，见 _forward_prob）。
 
     low_thresh > 0 时根系用滞回阈值（细弱处断段接回，适合根数/长度统计），否则用 0.5。
     use_check=False 时不做检查范围限定（用于没有该标注/对比旧口径）。
+    full_channels 指定 masks 里哪些通道要算**全分辨率**二值掩码（默认根系+茎，
+    这两条是全项目唯二有人读的）；不在其中的通道在 masks 里是 None。**注意
+    probs 不受影响**，永远是全通道的模型分辨率概率 —— 像素指标用的是它。
 
     返回：
         probs        [C 个 float32 ndarray (h1,w1)]，模型分辨率的逐通道概率（**原始**，
@@ -195,10 +199,15 @@ def predict(model, img: np.ndarray, max_side: int, stride: int = 16,
                 root_ok = False
 
     # ---- 其余通道：普通 0.5 阈值（茎/检查范围是块状目标，不需要滞回） ----
-    masks = [mask_counted]
-    for c in range(1, n_ch):
-        masks.append(image_io.prob_to_orig_mask(prob, w0, h0,
-                                                threshold=0.5, channel=c))
+    # 只算**真的有人用**的通道：全分辨率二值化一张要 ~100ms。逐处查过调用方 ——
+    # inference / test / tune_stats 都只用 CH_STEM，check 用的是模型分辨率上算出来的
+    # check_box，那个全分辨率掩码全项目没人读。传 None 占位，保住 masks 的下标语义。
+    masks = [None] * n_ch
+    masks[CH_ROOT] = mask_counted
+    for c in full_channels:
+        if c != CH_ROOT and c < n_ch:
+            masks[c] = image_io.prob_to_orig_mask(prob, w0, h0,
+                                                  threshold=0.5, channel=c)
 
     out = {
         "probs": probs,
