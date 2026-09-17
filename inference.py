@@ -8,6 +8,7 @@
     python inference.py --dir D:\\...\\某图片文件夹 --mm-per-px 0.1234  # CSV 追加 mm 列
     python inference.py --dir D:\\...\\某图片文件夹 --size 1536         # 覆盖输入长边
     python inference.py --dir D:\\...\\某图片文件夹 --save-mask         # 额外存 _mask.png
+    python inference.py --dir D:\\...\\某图片文件夹 --overlay-jpg       # overlay 存 JPEG（快 47 倍）
     python inference.py --model model_a,model_b --dir ...              # 多模型集成
 
 输入长边默认取**模型训练时的设置**（从权重里读），只有显式给 --size 才覆盖 ——
@@ -28,6 +29,7 @@
                             「各根长度」用分号分隔；--mm-per-px>0 时追加 mm 列；
                             文件末尾是若干以 # 开头的汇总行（Excel 可见，脚本可跳过）
     - {图片名}_overlay.png  原图 + 根系(红) + 茎(橙) + 检查范围(绿框)
+                            （--overlay-jpg 时为 .jpg，写一张快 47 倍）
     - {图片名}.rsml         预测根系折线，每条折线一个 plant（不再分主根/侧根）
     - {图片名}_mask.png     统计口径的根系掩码（**默认不存**，加 --save-mask 才出）
 目录/文件重名时自动追加 -1、-2 …（项目规范）。
@@ -36,7 +38,7 @@
 它比根长脆弱得多：根长是骨架长度、几乎不受线宽/阈值影响，而面积随线宽与二值化阈值
 **线性**变化（换个阈值能差一倍）。**适合同一条流水线内做相对比较，不要跨版本比绝对值。**
 
-**逐张输出什么**（2026-09-17 起精简）：默认只有 `_overlay.png` + `.rsml` 两个文件。
+**逐张输出什么**（2026-09-17 起精简）：默认只有 `_overlay` + `.rsml` 两个文件。
 `_stem.png` / `_check.png` 不再输出（overlay 里已用颜色标出），`_mask.png` 需要时加
 `--save-mask`。这样每张图少写 3 个 5472x3648 的大 PNG，磁盘和耗时都省一截。
 """
@@ -62,12 +64,17 @@ def parse_argv():
     """解析参数，兼容 readme 的 --model_xxx 与裸参数写法。"""
     model, folder, mm_per_px, size = None, None, None, None
     save_mask = False
+    overlay_fmt = "png"
     tokens = sys.argv[1:]
     i = 0
     while i < len(tokens):
         t = tokens[i]
         if t == "--save-mask":
             save_mask = True
+            i += 1
+        elif t in ("--overlay-jpg", "--overlay-jpeg"):
+            # overlay 存 JPEG（q90/4:4:4）：写一张快 47 倍、体积小 8 倍，画质对看结果够用
+            overlay_fmt = "jpg"
             i += 1
         elif t == "--model":
             model = tokens[i + 1] if i + 1 < len(tokens) else None
@@ -100,7 +107,7 @@ def parse_argv():
                 print(f"[错误] 无法识别的参数: {t}")
                 sys.exit(1)
             i += 1
-    return model, folder, mm_per_px, size, save_mask
+    return model, folder, mm_per_px, size, save_mask, overlay_fmt
 
 
 def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.ndarray:
@@ -125,7 +132,7 @@ def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.n
 
 
 def main():
-    model_arg, folder_arg, mm_arg, size_arg, save_mask = parse_argv()
+    model_arg, folder_arg, mm_arg, size_arg, save_mask, overlay_fmt = parse_argv()
     if not folder_arg:
         print(__doc__)
         sys.exit(1)
@@ -220,15 +227,25 @@ def main():
             wr.writerow(row)
 
             # ---- 保存识别结果图片 ----
-            # 默认只出 _overlay.png（肉眼看结果）+ .rsml（数据）。
+            # 默认只出 _overlay（肉眼看结果）+ .rsml（数据）。
             # _stem / _check 两张掩码图 2026-09-17 起不再输出：overlay 里已经用颜色标了，
             # _mask 默认也不存（要看统计口径的掩码时加 --save-mask）。
             # 这三张都是 5472x3648 的大图，一张 20MB 上下，省下来是实打实的磁盘和时间。
-            Image.fromarray(make_overlay(img, masks, res["check_box"])).save(
-                out_dir / f"{p.stem}_overlay.png")
+            #
+            # **写图是全流程最贵的一步**（实测 5472x3648：PNG 默认压缩 1891ms vs
+            # 模型前向 333ms，GPU 因此长期闲着）。所以：
+            #   PNG 用 compress_level=1 —— 535ms（快 3.5 倍，代价是体积 19→32MB）；
+            #   --overlay-jpg 改 JPEG q90/4:4:4 —— 40ms（快 47 倍、体积 2.3MB）。
+            #     overlay 是给人看的，JPEG 画质足够；要无损再留 PNG。
+            ov = make_overlay(img, masks, res["check_box"])
+            ov_path = out_dir / f"{p.stem}_overlay.{overlay_fmt}"
+            if overlay_fmt == "jpg":
+                Image.fromarray(ov).save(ov_path, quality=90, subsampling=0)
+            else:
+                Image.fromarray(ov).save(ov_path, compress_level=1)
             if save_mask:
                 Image.fromarray((res["mask_counted"].astype(np.uint8) * 255)).save(
-                    out_dir / f"{p.stem}_mask.png")
+                    out_dir / f"{p.stem}_mask.png", compress_level=1)
 
             # ---- 导出 RSML（每条折线一个 plant，不再分主根/侧根） ----
             rsml_path = write_rsml(out_dir / f"{p.stem}.rsml", file_key=p.stem,
@@ -239,7 +256,7 @@ def main():
                   f"各根长 {len_str[:60]}{'…' if len(len_str) > 60 else ''}")
             print(f"    检查范围 {'已识别' if res['check_ok'] else '未识别(全图统计)'} | "
                   f"起点已锚定到茎 {st['anchored_count']}/{count} 条 | 已保存: "
-                  f"{p.stem}_overlay.png + .rsml"
+                  f"{ov_path.name} + .rsml"
                   + (f" + {p.stem}_mask.png" if save_mask else ""))
         f.write(f"# 根系统计范围：模型识别出的检查范围（check_background），范围外不计入\n")
         f.write(f"# 起点锚定：每条预测折线的起点已补到茎边界，补回的那一段计入根长"
@@ -260,7 +277,7 @@ def main():
     print(f"\n推理完成，总耗时 {el:.1f}s | 平均 {el / len(imgs):.2f}s/张")
     print(f"结果目录: {out_dir}")
     print(f"结果文件: {csv_path}")
-    print(f"已保存文件: 每张图 {n_out} 个（图片名_overlay.png + .rsml"
+    print(f"已保存文件: 每张图 {n_out} 个（图片名_overlay.{overlay_fmt} + .rsml"
           + (" + _mask.png" if save_mask else "") + f"），共 {len(imgs) * n_out} 个")
 
 
