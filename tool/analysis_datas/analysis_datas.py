@@ -392,6 +392,7 @@ def main():
 
         summary, titles = [], []
         series_of = {}
+        n_drawn = 0
         if compare:
             k1, k2 = compare
             have = [n for n in nums if (k1, n, all_reps[0]) in data and (k2, n, all_reps[0]) in data]
@@ -414,6 +415,7 @@ def main():
                                ser, ylabel, vfmt,
                                out_dir / f"{num}_对比_{mname}.png", args.dpi,
                                annotate_ends=False, x_cat=args.x_cat)
+                    n_drawn += 1
                 allv = [v for kd in compare for r in all_reps
                         for d, v in data.get((kd, num, r), {}).items()]
                 dates = {d for kd in compare for r in all_reps
@@ -427,8 +429,11 @@ def main():
             titles = have
             series_of = lambda t: sum((series_for(data, kd, t, all_reps, "len")
                                        for kd in compare), [])
-            print(f"  已画 {len(have)} 个编号 × {len(METRICS)} 个指标"
-                  f" = {len(have) * len(METRICS)} 张图")
+            # 按**实际画出的**张数报：CSV 里没有 总根系面积 列时面积图会被跳过，
+            # 报「编号数 × 指标数」会虚高
+            print(f"  已画 {len(have)} 个编号，共 {n_drawn} 张图"
+                  + ("（缺 总根系面积 列，面积图跳过）" if n_drawn < len(have) * len(METRICS)
+                     else ""))
         else:
             for i, num in enumerate(nums, 1):
                 for mk, mname, ylabel, _col, vfmt in METRICS:
@@ -444,6 +449,7 @@ def main():
                     plot_chart(f"{kinds[0]}{num}  {mname}随时间变化", ser, ylabel, vfmt,
                                out_dir / f"{kinds[0]}{num}_{mname}.png", args.dpi,
                                annotate_ends=True, x_cat=args.x_cat)
+                    n_drawn += 1
                 titles.append(f"{kinds[0]}{num}")
                 allv = [v for r in all_reps
                         for d, v in data.get((kinds[0], num, r), {}).items()]
@@ -455,7 +461,9 @@ def main():
                     _rng(allv, "len", "{:.1f}"), _rng(allv, "len", "{:.1f}", max),
                     _rng(allv, "area", "{:.0f}"), _rng(allv, "area", "{:.0f}", max)])
                 if i % 50 == 0 or i == len(nums):
-                    print(f"  已画 {i}/{len(nums)}")
+                    print(f"  已画 {i}/{len(nums)} 个编号，共 {n_drawn} 张图"
+                          + ("（缺 总根系面积 列，面积图跳过）"
+                             if n_drawn < i * len(METRICS) else ""))
             series_of = lambda t: series_for(data, kinds[0], t, all_reps, "len")
 
         with open(out_dir / "_汇总.csv", "w", encoding="utf-8-sig", newline="") as f:

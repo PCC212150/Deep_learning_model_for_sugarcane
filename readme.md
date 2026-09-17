@@ -52,9 +52,10 @@ python tool\separate_dataset\separate_dataset.py --dir "<源文件夹>" --out "%
 划分记录见 `datasets/root/split.txt`（比例、种子、每组归属，可复现）。
 旧的 31 张数据集备份在 `datasets/_old_root_20260917/`（确认新版没问题后可删）。
 
-> ⚠ 2026-09-17 导入时发现 `plant_S003-3_20251116ST.rsml` 是个**空壳**（560 字节、
-> 0 个控制点，没画就保存了）。代码现在会告警并把该图的根通道标为「无效」不参与训练
-> （见 `common/dataset.py` 的 `_warn_empty_root`），但**这张图需要补标或移出数据集**。
+> 注：`plant_S003-3_20251116ST.rsml` 里没有 `<geometry>`（560 字节、0 个控制点）——
+> 这张图**确实没有根**，是合法的负样本，照常参与训练（按「无根」教学）。
+> 代码会打印一条 `[提示]` 提醒（见 `common/dataset.py` 的 `_warn_empty_root`），
+> 因为空 RSML 也可能是**漏标**；**确实没根的忽略即可，漏标的必须补上**。
 
 **训练真值的线宽**：RSML 折线按 `config.MASK_LINE_WIDTH`（默认 10px，原图尺度）画成掩码。
 这个值要跟图像里根的实际宽度对齐 —— 实测原图根宽中位 10px，而模型分割出来的是「看得见的根」

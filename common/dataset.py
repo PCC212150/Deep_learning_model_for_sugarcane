@@ -150,15 +150,19 @@ _warned_empty_root = set()
 
 
 def _warn_empty_root(rsml_path):
-    """同一个文件只吵一次（数据集构造 + 评测会对同一张图问好几遍）。"""
+    """同一个文件只吵一次（数据集构造 + 评测会对同一张图问好几遍）。
+
+    **只是提醒，不改变行为**：这种图照常按「无根」负样本参与训练。
+    """
     key = str(rsml_path)
     if key in _warned_empty_root:
         return
     _warned_empty_root.add(key)
-    print(f"[警告] {Path(rsml_path).name} 里没有任何根系几何（<geometry>），"
-          f"根通道会被当成「无效」屏蔽掉，不参与训练。\n"
-          f"        多半是标注没画就保存了 —— 请补标，或把这张图移出数据集；"
-          f"留着它会让模型学成「这张没有根」。")
+    print(f"[提示] {Path(rsml_path).name} 里没有任何根系几何（<geometry>），"
+          f"将按「这张图没有根」参与训练。\n"
+          f"        如果确实没有根（合法负样本），忽略本条即可；\n"
+          f"        如果是**漏标**（画了没保存/忘了画），请补标或把这张图移出数据集 ——"
+          f"那种情况下会把模型教坏。")
 
 
 def build_target_masks(rsml_path, other_path, orig_size, target_size, mask_width):
@@ -180,14 +184,13 @@ def build_target_masks(rsml_path, other_path, orig_size, target_size, mask_width
     masks[:, :, CH_ROOT] = gt_mask.draw_polylines_at(polys, target_size, line_w)
 
     # 根系标注是配对前提，但**文件存在 ≠ 里面画了东西**：RSMLGenerator 里没标就保存会留下
-    # 一个没有 <geometry> 的空壳。那种图如果照常按「全背景」训练，等于教模型"这张没有根"，
-    # 是有害的 —— 实测 2026-09-17 导入的数据集里 plant_S003-3 就是这种（560 字节、0 个控制点）。
-    # 所以这里把它标成**无效通道**（损失屏蔽），并告警一次，让人去补标或移出数据集。
+    # 一个没有 <geometry> 的空壳（如 560 字节、0 个控制点）。
+    # 这种图**照常当「无根」负样本参与训练**（valid 保持 1）—— 实测数据集里的
+    # plant_S003-3_20251116ST 就是真·没有根的合法样本，用户确认过。
+    # 但仍要告警一次：它也可能是「忘记画就保存」的漏标，那种情况下会把模型教坏，得让人看见。
+    valid[CH_ROOT] = 1.0
     if not masks[:, :, CH_ROOT].any():
-        valid[CH_ROOT] = 0.0
         _warn_empty_root(rsml_path)
-    else:
-        valid[CH_ROOT] = 1.0
 
     if other_path is not None:
         lab = parse_other(other_path, image_size=orig_size)
