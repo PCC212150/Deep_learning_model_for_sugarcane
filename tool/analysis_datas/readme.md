@@ -6,6 +6,12 @@
 - 图里每个**重复次序**（`C001-1` / `C001-2` / `C001-3` / `C001-4`）是一条折线；
 - 横坐标 = 拍摄日期（20241229、20241231 …），纵坐标 **从 0 起**（这是"量"，截断纵轴会把微小波动放大成陡坡）。
 
+CSV 里**同时有 C 和 P 时，每种处理方式各画一套**（`C001_根长.png` 和 `P001_根长.png` 各一份，
+5 个编号 × 2 种 = 20 张）。以前只画排序第一种（`kinds[0]`），P 的数据会被**静默丢掉** ——
+看到「编号 5 个 / 10 张图」但 P 不见了就是这个原因。工具现在会提示可以改用叠图模式：
+
+    2 种处理方式各画一套；想叠进同一张图对比，用 --compare C,P
+
 **对比模式 `--compare C,P`**：把**同一个编号**下两种处理方式画进同一张图（8 条线），
 同样出根长/根面积两份。8 条线**不能上 8 种颜色**（规范禁止生成新色相，且第 5 色起无法保证
 色盲可辨），所以用**复合编码**：**颜色 = 重复次序**（4 色）、**线型 = 处理方式**（实线/虚线）。
@@ -44,9 +50,13 @@
 python tool\analysis_datas\analysis_datas.py --csv "C:\Users\me\Desktop\root_pictures.csv"
 python tool\analysis_datas\analysis_datas.py --csv a.csv,b.csv          # 多个文件
 python tool\analysis_datas\analysis_datas.py                            # 用 analysis_datas\ 下所有 csv
-python tool\analysis_datas\analysis_datas.py --csv x.csv --ids C001,C203   # 只画这几个编号
-python tool\analysis_datas\analysis_datas.py --csv x.csv --no-overview     # 不生成总览图
+python tool\analysis_datas\analysis_datas.py --csv x.csv --ids 001,002       # 只画这几个编号
+python tool\analysis_datas\analysis_datas.py --csv x.csv --compare C,P      # C/P 叠进同一张图
+python tool\analysis_datas\analysis_datas.py --csv x.csv --no-overview      # 不生成总览图
 ```
+
+重跑到同一个 `--out` 时不会覆盖旧图：输出目录会追加 `-1`、`-2`（项目规范），
+旧目录要自己删。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -65,11 +75,11 @@ python tool\analysis_datas\analysis_datas.py --csv x.csv --no-overview     # 不
 
 | 文件 | 内容 |
 | --- | --- |
-| `{方式}{编号}_根长.png` | 总根长随时间变化 |
-| `{方式}{编号}_根面积.png` | 总根系面积随时间变化 |
+| `{方式}{编号}_根长.png` | 总根长随时间变化（每种处理方式各一份） |
+| `{方式}{编号}_根面积.png` | 总根系面积随时间变化（每种处理方式各一份） |
 | `{编号}_对比_{根长\|根面积}.png` | 对比模式才有：同一编号两种处理画一张 |
 | `_总览.png` | 所有编号的缩略图拼成一张，快速扫哪个编号有异常 |
-| `_汇总.csv` | 每个编号的日期数、各重复次序的点数、根长与根面积的最小/最大值 |
+| `_汇总.csv` | 每套（处理方式 × 编号）的日期数、各重复次序的点数、根长与根面积的最小/最大值 |
 | `{原名}_无空格.csv` | 只在原 CSV 里有带空格的图片名时才生成，图片名已去掉空格 |
 
 实测规模：`root_pictures.csv`（3377 行 / 273 个编号）跑完约 **30 秒**。

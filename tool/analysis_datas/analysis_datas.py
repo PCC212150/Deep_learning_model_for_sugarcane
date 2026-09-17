@@ -15,6 +15,9 @@
 - `{方式}{编号}_根长.png`   —— 纵坐标 = 总根长 (px)
 - `{方式}{编号}_根面积.png` —— 纵坐标 = 总根系面积 (px²)
 
+CSV 里**同时有 C 和 P 时，每种处理方式各画一套**（5 个编号 × 2 种 = 20 张）。
+以前只画排序第一种（`kinds[0]`），P 的数据会被静默丢掉。
+
 **对比模式 `--compare C,P`**：把**同一个编号**下两种处理方式画进同一张图，
 每张图 8 条线（`C001-1..4` + `P001-1..4`），同样出根长/根面积两份。
 
@@ -381,6 +384,9 @@ def main():
         print(f"  共 {st['总行数']} 行 | 处理方式 {kinds} | 编号 {len(nums)} 个 | 重复 {all_reps}"
               + (f" | 跳过不可信 {st['跳过不可信']} 行" if st["跳过不可信"] else "")
               + (f" | 文件名无法解析 {st['文件名无法解析']} 行" if st["文件名无法解析"] else ""))
+        if len(kinds) > 1 and not compare:
+            print(f"  {len(kinds)} 种处理方式各画一套；想叠进同一张图对比，用 "
+                  f"--compare {','.join(kinds[:2])}")
         if st["含空格"]:
             fn, cl = st["_cleaned"]
             dst = out_dir / f"{csv_path.stem}_无空格.csv"
@@ -391,11 +397,16 @@ def main():
             print(f"  [注意] {len(st['重复点'])} 个重复点，已取最后一次：{st['重复点'][:3]}")
 
         summary, titles = [], []
-        series_of = {}
+        overview = {}          # 总览用：标题 -> 该格子的折线
+        sum_header = ["处理方式", "编号", "日期数", "各重复次序的点数",
+                      "总根长最小", "总根长最大", "总根系面积最小", "总根系面积最大"]
         n_drawn = 0
         if compare:
             k1, k2 = compare
-            have = [n for n in nums if (k1, n, all_reps[0]) in data and (k2, n, all_reps[0]) in data]
+            # 有数据就算「有」：只探 all_reps[0] 的话，某个编号恰好缺第 1 次重复
+            # 就会被误判成「只有一种处理」而整块跳过
+            has = lambda kd, n: any((kd, n, r) in data for r in all_reps)  # noqa: E731
+            have = [n for n in nums if has(k1, n) and has(k2, n)]
             missing = [n for n in nums if n not in have]
             print(f"  对比模式 {k1} vs {k2}：{len(have)} 个编号两种处理都有"
                   + (f"，{len(missing)} 个只有其中一种，跳过" if missing else ""))
@@ -421,58 +432,63 @@ def main():
                 dates = {d for kd in compare for r in all_reps
                          for d in data.get((kd, num, r), {})}
                 summary.append([
-                    num, len(dates),
+                    ",".join(compare), num, len(dates),
                     " ".join(f"{kd}:{sum(1 for r in all_reps if (kd, num, r) in data)}"
                              for kd in compare),
                     _rng(allv, "len", "{:.1f}"), _rng(allv, "len", "{:.1f}", max),
                     _rng(allv, "area", "{:.0f}"), _rng(allv, "area", "{:.0f}", max)])
             titles = have
-            series_of = lambda t: sum((series_for(data, kd, t, all_reps, "len")
-                                       for kd in compare), [])
+            overview = {t: sum((series_for(data, kd, t, all_reps, "len")
+                                for kd in compare), []) for t in have}
             # 按**实际画出的**张数报：CSV 里没有 总根系面积 列时面积图会被跳过，
             # 报「编号数 × 指标数」会虚高
             print(f"  已画 {len(have)} 个编号，共 {n_drawn} 张图"
                   + ("（缺 总根系面积 列，面积图跳过）" if n_drawn < len(have) * len(METRICS)
                      else ""))
         else:
-            for i, num in enumerate(nums, 1):
+            # 每种处理方式各画一套（不是只画 kinds[0]）：CSV 里 C、P 都有时，
+            # 两种都要出图，否则 P 的数据会被静默丢掉
+            tasks = [(kind, num) for kind in kinds for num in nums
+                     if any(data.get((kind, num, r)) for r in all_reps)]
+            unit = "套（处理方式×编号）" if len(kinds) > 1 else "个编号"
+            for i, (kind, num) in enumerate(tasks, 1):
+                tag = f"{kind}{num}"
                 for mk, mname, ylabel, _col, vfmt in METRICS:
                     ser = []
                     for j, rep in enumerate(all_reps):
-                        pts = {d: v[mk] for d, v in data.get((kinds[0], num, rep), {}).items()
+                        pts = {d: v[mk] for d, v in data.get((kind, num, rep), {}).items()
                                if mk in v}
                         if pts:
-                            ser.append((f"{kinds[0]}{num}-{rep}", "-",
+                            ser.append((f"{tag}-{rep}", "-",
                                         SERIES[j % len(SERIES)], pts))
                     if not ser:
                         continue
-                    plot_chart(f"{kinds[0]}{num}  {mname}随时间变化", ser, ylabel, vfmt,
-                               out_dir / f"{kinds[0]}{num}_{mname}.png", args.dpi,
+                    plot_chart(f"{tag}  {mname}随时间变化", ser, ylabel, vfmt,
+                               out_dir / f"{tag}_{mname}.png", args.dpi,
                                annotate_ends=True, x_cat=args.x_cat)
                     n_drawn += 1
-                titles.append(f"{kinds[0]}{num}")
+                titles.append(tag)
+                overview[tag] = series_for(data, kind, num, all_reps, "len")
                 allv = [v for r in all_reps
-                        for d, v in data.get((kinds[0], num, r), {}).items()]
-                dates = {d for r in all_reps for d in data.get((kinds[0], num, r), {})}
+                        for d, v in data.get((kind, num, r), {}).items()]
+                dates = {d for r in all_reps for d in data.get((kind, num, r), {})}
                 summary.append([
-                    num, len(dates),
-                    " ".join(f"{rep}:{len(data.get((kinds[0], num, rep), {}))}"
+                    kind, num, len(dates),
+                    " ".join(f"{rep}:{len(data.get((kind, num, rep), {}))}"
                              for rep in all_reps),
                     _rng(allv, "len", "{:.1f}"), _rng(allv, "len", "{:.1f}", max),
                     _rng(allv, "area", "{:.0f}"), _rng(allv, "area", "{:.0f}", max)])
-                if i % 50 == 0 or i == len(nums):
-                    print(f"  已画 {i}/{len(nums)} 个编号，共 {n_drawn} 张图"
+                if i % 50 == 0 or i == len(tasks):
+                    print(f"  已画 {i}/{len(tasks)} {unit}，共 {n_drawn} 张图"
                           + ("（缺 总根系面积 列，面积图跳过）"
                              if n_drawn < i * len(METRICS) else ""))
-            series_of = lambda t: series_for(data, kinds[0], t, all_reps, "len")
 
         with open(out_dir / "_汇总.csv", "w", encoding="utf-8-sig", newline="") as f:
             wr = csv.writer(f)
-            wr.writerow(["编号", "日期数", "各重复次序的点数",
-                         "总根长最小", "总根长最大", "总根系面积最小", "总根系面积最大"])
+            wr.writerow(sum_header)
             wr.writerows(summary)
         if not args.no_overview and titles:
-            plot_overview(titles, series_of, out_dir / "_总览.png")
+            plot_overview(titles, overview.get, out_dir / "_总览.png")
         print(f"  输出: {out_dir}\n")
 
 
