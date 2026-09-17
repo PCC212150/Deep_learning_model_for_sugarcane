@@ -27,7 +27,7 @@ from common import ckpt, image_io, metrics, naming, predict  # noqa: E402
 from common.dataset import (CH_CHECK, CH_ROOT, CH_STEM, build_target_masks,  # noqa: E402
                             discover_pairs, find_other)
 from common.rsml_parse import parse_rsml, root_stats  # noqa: E402
-from common.skeleton_stats import analyze_mask_anchored  # noqa: E402
+from common.skeleton_stats import analyze_mask_counted  # noqa: E402
 
 
 def preprocess_argv():
@@ -55,6 +55,10 @@ def parse_args():
     p.add_argument("--out-dir", type=Path, default=config.MODEL_DIR)
     p.add_argument("--mm-per-px", type=float, default=None,
                    help="长度换算：1 像素 = 多少毫米（默认用 config.MM_PER_PX）")
+    p.add_argument("--no-anchor", dest="anchor", action="store_false",
+                   default=config.STEM_ANCHOR,
+                   help="统计不把折线起点补到茎（标注只画看得见的根时用）。"
+                        "只影响总长，不影响 Dice/根数；缺省见 config.STEM_ANCHOR")
     p.add_argument("--cpu", action="store_true")
     return p.parse_args(preprocess_argv())
 
@@ -113,9 +117,10 @@ def main():
         # 像素指标在**模型分辨率**上算，与训练时的验证 Dice 同一口径
         # （原图分辨率下 GT 是 5px 线、预测被上采样得较细，指标会被线宽差吃掉）
         preds = [res["probs"][c] > 0.5 for c in range(len(res["probs"]))]
-        # 与部署同口径：起点锚定到茎（补回被泡沫环挡住的那一段，计入根长）
-        st = analyze_mask_anchored(
-            res["mask_counted"], res["masks"][CH_STEM],
+        # 与部署同口径（inference.py 同样有 --no-anchor）：
+        # 缺省把起点锚定到茎，补回被泡沫环挡住的那一段并计入根长
+        st = analyze_mask_counted(
+            res["mask_counted"], res["masks"][CH_STEM], anchor=args.anchor,
             spur=config.PRED_SPUR_LENGTH, min_len=config.MIN_ROOT_LENGTH,
             factor=config.STEM_ANCHOR_FACTOR, min_px=config.STEM_ANCHOR_MIN_PX,
             max_px=config.STEM_ANCHOR_MAX_PX)
@@ -179,11 +184,15 @@ def main():
                        if not np.isnan(dice) else f"# {n}: 测试集无该通道真值")
     summary += [
         f"# 统计口径：输入长边 {size}；根系只在模型识别出的检查范围内统计，"
-        f"且每条折线起点锚定到茎边界（补回被泡沫环挡住的那一段并计入根长）；"
-        f"低阈值 {config.PRED_LOW_THRESHOLD} / 剪枝 {config.PRED_SPUR_LENGTH}px / "
-        f"最短根 {config.MIN_ROOT_LENGTH}px / "
-        f"锚定 {config.STEM_ANCHOR_FACTOR}×茎半径"
-        f"({config.STEM_ANCHOR_MIN_PX:.0f}~{config.STEM_ANCHOR_MAX_PX:.0f}px)",
+        + (f"且每条折线起点锚定到茎边界（补回被泡沫环挡住的那一段并计入根长）；"
+           f"低阈值 {config.PRED_LOW_THRESHOLD} / 剪枝 {config.PRED_SPUR_LENGTH}px / "
+           f"最短根 {config.MIN_ROOT_LENGTH}px / "
+           f"锚定 {config.STEM_ANCHOR_FACTOR}×茎半径"
+           f"({config.STEM_ANCHOR_MIN_PX:.0f}~{config.STEM_ANCHOR_MAX_PX:.0f}px)"
+           if args.anchor else
+           f"**起点不锚定**（--no-anchor，按可见根统计，适用于「只标看得见的根」的标注）；"
+           f"低阈值 {config.PRED_LOW_THRESHOLD} / 剪枝 {config.PRED_SPUR_LENGTH}px / "
+           f"最短根 {config.MIN_ROOT_LENGTH}px"),
         f"# 单位换算：1 px = {mm} mm" if mm else "# 未做 mm 换算",
         f"# 测试总耗时 {el:.1f}s | 单图平均 {el / max(len(pairs), 1):.2f}s",
     ]

@@ -532,6 +532,29 @@ def analyze_mask_anchored(mask, stem_mask=None, spur: float = 30.0,
     return st
 
 
+def analyze_mask_counted(mask, stem_mask=None, anchor: bool = True, factor: float = 6.0,
+                         min_px: float = 250.0, max_px: float = 600.0, **kw) -> dict:
+    """**统计口径的唯一入口**：按 anchor 决定要不要把折线起点补到茎。
+
+    锚定与否必须跟**标注口径**配对，两边错配就是系统性偏差：
+
+    - `anchor=True`  —— 标注**从茎边画**（含被泡沫/海绵环挡住看不见的那一段）：
+      预测的起点也补到茎上、补回的那段计入长度，两边才同口径。
+    - `anchor=False` —— 标注**只画看得见的**：预测同样不补。此时再锚定等于
+      单方面给预测加长度，总长会系统性偏高。
+
+    两种口径只影响 `lengths` / `total`（根长统计）与 `anchored_count`，
+    **不影响 mask、count、Dice/IoU** —— 分割指标与它无关。
+    阈值语义见 `stem_anchor_tolerance`：距茎超过 250~600px 的折线本来就补不到。
+    """
+    if anchor:
+        return analyze_mask_anchored(mask, stem_mask, factor=factor, min_px=min_px,
+                                     max_px=max_px, **kw)
+    st = analyze_mask_ex(mask, with_paths=True, **kw)
+    st["anchored_count"] = 0
+    return st
+
+
 def anchor_gain_for_trace(trace, tree, max_dist: float) -> float:
     """给「像素轨迹」(skeleton_stats 内部的 (y, x) 口径) 算需要补的锚定长度。
 

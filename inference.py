@@ -8,6 +8,7 @@
     python inference.py --dir D:\\...\\某图片文件夹 --mm-per-px 0.1234  # CSV 追加 mm 列
     python inference.py --dir D:\\...\\某图片文件夹 --size 1536         # 覆盖输入长边
     python inference.py --dir D:\\...\\某图片文件夹 --save-mask         # 额外存 _mask.png
+    python inference.py --dir D:\\...\\某图片文件夹 --no-anchor         # 标注只画看得见的根时用
     python inference.py --model model_a,model_b --dir ...              # 多模型集成
 
 输入长边默认取**模型训练时的设置**（从权重里读），只有显式给 --size 才覆盖 ——
@@ -17,6 +18,8 @@
   - 根系只在**模型识别出的检查范围**内统计（范围外不计入），不扣茎；
   - 每条预测折线的**起点会锚定到茎边界**——茎外那圈黑色泡沫环不是根（模型判背景没错），
     但标注是从茎边开始画的，那一段被挡住、实际存在，所以补回来并计入根长。
+    这条**要与标注口径配对**：标注只画看得见的根时加 `--no-anchor`，否则总长会系统性偏高
+    （见 config.STEM_ANCHOR）。开关只影响根长统计，与掩码/Dice/根数无关。
 
 结果：result/{目标文件夹名}/
     - {目标文件夹名}.csv    每行一张图（UTF-8 BOM，Excel 直接双击可开）：
@@ -53,19 +56,24 @@ import config  # noqa: E402
 from common import ckpt, image_io, naming, predict  # noqa: E402
 from common.dataset import CH_CHECK, CH_ROOT, CH_STEM  # noqa: E402
 from common.rsml_export import write_rsml  # noqa: E402
-from common.skeleton_stats import analyze_mask_anchored  # noqa: E402
+from common.skeleton_stats import analyze_mask_counted  # noqa: E402
 
 
 def parse_argv():
     """解析参数，兼容 readme 的 --model_xxx 与裸参数写法。"""
     model, folder, mm_per_px, size = None, None, None, None
     save_mask = False
+    anchor = config.STEM_ANCHOR
     tokens = sys.argv[1:]
     i = 0
     while i < len(tokens):
         t = tokens[i]
         if t == "--save-mask":
             save_mask = True
+            i += 1
+        elif t in ("--no-anchor", "--no_anchor"):
+            # 标注只画看得见的根时用：统计不补起点到茎（见 config.STEM_ANCHOR）
+            anchor = False
             i += 1
         elif t == "--model":
             model = tokens[i + 1] if i + 1 < len(tokens) else None
@@ -98,7 +106,7 @@ def parse_argv():
                 print(f"[错误] 无法识别的参数: {t}")
                 sys.exit(1)
             i += 1
-    return model, folder, mm_per_px, size, save_mask
+    return model, folder, mm_per_px, size, save_mask, anchor
 
 
 def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.ndarray:
@@ -123,7 +131,7 @@ def make_overlay(img: np.ndarray, masks, check_box, alpha: float = 0.45) -> np.n
 
 
 def main():
-    model_arg, folder_arg, mm_arg, size_arg, save_mask = parse_argv()
+    model_arg, folder_arg, mm_arg, size_arg, save_mask, anchor = parse_argv()
     if not folder_arg:
         print(__doc__)
         sys.exit(1)
@@ -151,6 +159,7 @@ def main():
         print(f"[警告] 输入长边 {size_arg} 与模型训练时（{meta['size']}）不一致："
               f"尺度不匹配会明显掉精度，建议按训练尺度跑")
 
+    print(f"统计口径: 起点锚定到茎 {'开' if anchor else '关（--no-anchor，按可见根统计）'}")
     imgs = sorted(p for p in img_dir.iterdir()
                   if p.suffix.lower() in config.IMAGE_EXTS)
     if not imgs:
@@ -188,9 +197,11 @@ def main():
                                   stride=config.STRIDE, device=device,
                                   low_thresh=config.PRED_LOW_THRESHOLD)
             masks = res["masks"]
-            # 起点锚定到茎：补回被泡沫环挡住的那一段（计入根长，与标注同口径）
-            st = analyze_mask_anchored(
+            # 起点锚定到茎：补回被泡沫环挡住的那一段（计入根长，与标注同口径）。
+            # --no-anchor 时统计口径同样不补（标注只画看得见的根时用）
+            st = analyze_mask_counted(
                 res["mask_counted"], masks[CH_STEM] if len(masks) > CH_STEM else None,
+                anchor=anchor,
                 spur=config.PRED_SPUR_LENGTH, min_len=config.MIN_ROOT_LENGTH,
                 factor=config.STEM_ANCHOR_FACTOR, min_px=config.STEM_ANCHOR_MIN_PX,
                 max_px=config.STEM_ANCHOR_MAX_PX)
