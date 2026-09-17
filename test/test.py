@@ -188,7 +188,10 @@ def main():
         f"# 测试总耗时 {el:.1f}s | 单图平均 {el / max(len(pairs), 1):.2f}s",
     ]
 
-    csv_path = naming.unique_path(pth.parent / f"model_test_{naming.timestamp()}.csv")
+    # create_unique_file 而非 unique_path：两个测试进程同时启动时（一张卡一个），
+    # 「先查存在、再 open(w)」会双双选中同一个文件名，**静默覆盖**对方的结果
+    csv_path = naming.create_unique_file(pth.parent,
+                                         f"model_test_{naming.timestamp()}.csv")
     with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(header)

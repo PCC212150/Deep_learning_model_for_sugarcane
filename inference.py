@@ -259,9 +259,11 @@ def main():
     print(f"图片 {len(imgs)} 张: {img_dir}")
 
     # ---- 结果目录 result/{目标文件夹名}，重名追加 -1… ----
-    out_dir = naming.unique_path(config.RESULT_DIR / img_dir.name)
-    out_dir.mkdir(parents=True, exist_ok=False)
-    csv_path = naming.unique_path(out_dir / f"{img_dir.name}.csv")
+    # create_unique_dir 而非 unique_path：两个推理进程（一张卡一个）同时启动时，
+    # 「先查存在、再 mkdir」会双双拿到同一个名字，其中一个 mkdir(exist_ok=False) 直接崩。
+    # 同 train.py 用它的理由。目录名唯一，里面的 csv 就不必再去重了。
+    out_dir = naming.create_unique_dir(config.RESULT_DIR, img_dir.name)
+    csv_path = out_dir / f"{img_dir.name}.csv"
     mm = mm_per_px if mm_per_px and mm_per_px > 0 else 0.0
 
     header = ["图片名", "根数量", "起点锚定(条)", "总根长(px)", "总根系面积(px²)",

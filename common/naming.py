@@ -45,6 +45,27 @@ def create_unique_dir(parent, name) -> Path:
     raise SystemExit(f"[错误] {parent} 下 {name} 的重名副本已超过 1000 个，请先清理")
 
 
+def create_unique_file(parent, name) -> Path:
+    """并发安全地创建一个空文件（重名追加 -1、-2 …），返回**实际创建**的路径。
+
+    与 create_unique_dir 同理：unique_path 是「先查存在、再 open(w)」，两个进程同时
+    启动会双双选中同一个文件名，一个把另一个的结果**静默覆盖**掉（比崩溃更糟）。
+    open(mode="x") 是原子的，撞名就换下一个候选重试。
+
+    **调用方拿到路径后自己写内容**（本函数只负责占位）。
+    """
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    for k in range(1000):
+        cand = parent / (name if k == 0 else f"{Path(name).stem}-{k}{Path(name).suffix}")
+        try:
+            with open(cand, "x", encoding="utf-8"):
+                return cand
+        except FileExistsError:
+            continue
+    raise SystemExit(f"[错误] {parent} 下 {name} 的重名副本已超过 1000 个，请先清理")
+
+
 def model_folder_name(ts: str) -> str:
     """模型文件夹名，如 model_202609091135。"""
     return f"model_{ts}"
