@@ -54,6 +54,10 @@ python tool\repair_rsml\repair_rsml.py --dir "D:\目标文件夹" --add-missing 
 修复后会在目标文件夹里生成 `repair_rsml_log.txt`，逐条记录「相对路径 → 旧值 → 新值」，
 需要回滚可以按它手工改回去。
 
+> ⚠️ **日志别留在数据文件夹里**：如果这个文件夹接下来要拿去划数据集
+> （[tool/separate_dataset](../separate_dataset/readme.md)），请先把日志挪走 ——
+> 划分工具是按「文件夹里所有文件」分组的，一个 `.txt` 会被当成一组文件划进 train/test。
+
 ## 为什么是文本替换，不是解析 XML
 
 XML `parse → serialize` 会把**整个文件重写一遍** —— 属性顺序、自闭合标签写法、缩进、

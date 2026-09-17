@@ -50,7 +50,9 @@ python tool\separate_dataset\separate_dataset.py --dir "<源文件夹>" --out "%
 ```
 
 划分记录见 `datasets/root/split.txt`（比例、种子、每组归属，可复现）。
-旧的 31 张数据集备份在 `datasets/_old_root_20260917/`（确认新版没问题后可删）。
+测试集 7 株：`S127-1 / S127-3 / S127-4 / S001-3 / S002-3 / S002-4 / C001-1`
+（其中 `C001-1` 是 2024-12 的 **CK 批次**，与其余 ST 批次不同源，等于顺带测了跨批次泛化）。
+早先的 31 张数据集与重复件备份已删除，`datasets/` 下现在只有 `root/` 这一份。
 
 > 注：`plant_S003-3_20251116ST.rsml` 里没有 `<geometry>`（560 字节、0 个控制点）——
 > 这张图**确实没有根**，是合法的负样本，照常参与训练（按「无根」教学）。
@@ -64,7 +66,7 @@ python tool\separate_dataset\separate_dataset.py --dir "<源文件夹>" --out "%
 （5~13px 实测根数 18.5→17.8、总长 17687→16743px），不用担心贴近的根粘成一根。
 
 - 早先 test 的 6 张与训练集是**逐字节相同的同一批图**（测试指标会偏高），重划时已把训练集里的
-  重复件移出；这些副本连同早期换下来的图都在 `datasets/_backup_dup_20260914/`，确认无误后可删。
+  重复件移出（当时的备份 `datasets/_backup_dup_20260914/` 已删）。
 - 训练/验证划分同样**按植株整组进出**（同一植株的不同时点不会分处两侧），见
   [train/train.py](train/train.py) 的 `split_by_plant`；`config.VAL_SIZE` 是验证**植株数**（当前 4 ≈ 6 张 ≈ 25%）。
 
@@ -274,6 +276,19 @@ python inference.py --dir "D:\目标图片文件夹的路径" --mm-per-px 0.1234
 口径下调出来的；改成「三通道模型 + 检查范围限定」后需在训练集上重扫一遍再定稿。
 
 5）**按检查范围裁剪图片（框外涂黑）**：见 [tool/cut_pictures](tool/cut_pictures/readme.md)。
+
+6）**标注文件的自查/修复**（都在 `tool/` 下，配套 readme）：
+
+| 工具 | 修什么 | 什么时候用 |
+| --- | --- | --- |
+| [repair_json](tool/repair_json/readme.md) | labelme json 的 `imagePath` 与图片实际文件名（名字 + 后缀）不一致 | **在 labelme 里打开 json 加载不出图时**（本项目训练/推理不读这个字段，不影响指标） |
+| [repair_rsml](tool/repair_rsml/readme.md) | RSML 的 `<file-key>` 与文件名不一致 | 拿去 RootNav / rsml-visualizer 里看之前 |
+| [add_suffix](tool/add_suffix/readme.md) | 批量给图片/标注加日期后缀 | 新一批数据入库时 |
+
+> 两个 repair 工具都会在**目标文件夹里**写一份 `repair_*_log.txt`（记录旧值→新值，供回滚）。
+> **如果这个文件夹接下来要拿去划数据集，记得先把日志挪走** ——
+> [separate_dataset](tool/separate_dataset/readme.md) 是按「文件夹里所有文件」分组的，
+> 一个 `.txt` 会被当成一组文件划进 train/test。
 
 ```
 python tool\cut_pictures\cut_pictures.py --dir "D:\待裁剪图片"

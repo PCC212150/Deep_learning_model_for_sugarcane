@@ -277,11 +277,19 @@ def main(argv=None):
         return 0
 
     # ---------- 落盘 ----------
-    out_dir = Path(args.out).expanduser() if args.out else src.parent / f"{src.name}_split"
-    if args.out and out_dir.exists():
-        print(f"[错误] 输出目录已存在：{out_dir}（换个 --out，或先删掉它，避免与旧结果混在一起）")
-        return 1
-    out_dir = naming.unique_path(out_dir)
+    if args.out:
+        out_dir = Path(args.out).expanduser()
+        if out_dir.exists():
+            # 空目录直接复用：重导数据集时常见做法就是「先把 datasets/root 清空再重跑」。
+            # 只有非空才拦 —— 那才是真会跟旧结果混在一起的情况。
+            if any(out_dir.iterdir()):
+                print(f"[错误] 输出目录已存在且不为空：{out_dir}"
+                      f"（换个 --out，或先清空它，避免与旧结果混在一起）")
+                return 1
+            print(f"[提示] 输出目录已存在但是空的，直接用它：{out_dir}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = naming.create_unique_dir(src.parent, f"{src.name}_split")
 
     for name in SUBSETS:
         if not assign[name]:
